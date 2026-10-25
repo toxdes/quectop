@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-23T05:47:35Z",
+  "title": "Design System: quectop",
+  "extensions": {
+    "colorMeta": {
+      "teal": {"role": "primary", "displayName": "Measurement teal"},
+      "violet": {"role": "secondary", "displayName": "Comparison violet"},
+      "third": {"role": "tertiary", "displayName": "Core gray"},
+      "fourth": {"role": "tertiary", "displayName": "Core ochre"},
+      "core5": {"role": "tertiary", "displayName": "Core rose"},
+      "core6": {"role": "tertiary", "displayName": "Core blue"},
+      "core7": {"role": "tertiary", "displayName": "Core olive"},
+      "core8": {"role": "tertiary", "displayName": "Core mauve"},
+      "good": {"role": "primary", "displayName": "Sampling green"},
+      "bg": {"role": "neutral", "displayName": "Pale background"},
+      "panel": {"role": "neutral", "displayName": "Near-white panel"},
+      "ink": {"role": "neutral", "displayName": "Measurement ink"},
+      "muted": {"role": "neutral", "displayName": "Secondary ink"},
+      "grid": {"role": "neutral", "displayName": "Plot grid"}
+    },
+    "typographyMeta": {
+      "title": {"displayName": "Project title", "purpose": "Dashboard heading."},
+      "body": {"displayName": "Monospace base", "purpose": "Minimum 14px local font stack and tabular measurements."},
+      "label": {"displayName": "Measurement label", "purpose": "Uppercase summary and chart headings."},
+      "measurement": {"displayName": "Current value", "purpose": "Centered summary values with responsive size overrides."}
+    },
+    "shadows": [{"name": "chart-tooltip", "value": "0 3px 12px #00000016", "purpose": "Subtle separation for floating inspection values above the plot."}],
+    "motion": [],
+    "breakpoints": [
+      {"name": "narrow-max", "value": "680px"},
+      {"name": "middle-max", "value": "1280px"},
+      {"name": "wide-min", "value": "1900px"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Theme button", "kind": "button", "refersTo": "theme-button",
+      "description": "Compact icon control; its accessible label names the next theme.",
+      "html": "<button class=\"ds-theme\" aria-label=\"Use dark theme\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" aria-hidden=\"true\"><path d=\"M20 15.3A8.5 8.5 0 0 1 8.7 4a8.5 8.5 0 1 0 11.3 11.3Z\"/></svg></button>",
+      "css": ".ds-theme{display:grid;place-items:center;width:34px;height:32px;border:0;border-radius:6px;background:var(--panel,#f8faf9);color:var(--ink,#172c31);cursor:pointer}.ds-theme:hover{outline:1px solid var(--muted,#586b6e)}.ds-theme:focus-visible{outline:2px solid var(--teal,#05829c);outline-offset:3px}"
+    },
+    {
+      "name": "History range", "kind": "input", "refersTo": "range-select",
+      "description": "Native selector for five history spans, initially one day.",
+      "html": "<select class=\"ds-range\" aria-label=\"History range\"><option>1 hour</option><option selected>1 day</option><option>7 days</option><option>30 days</option><option>90 days</option></select>",
+      "css": ".ds-range{font:14px ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;background:var(--panel,#f8faf9);color:var(--ink,#172c31);border:0;border-radius:6px;height:32px;padding:0 10px;cursor:pointer}.ds-range:hover{outline:1px solid var(--muted,#586b6e)}.ds-range:focus-visible{outline:2px solid var(--teal,#05829c);outline-offset:3px}"
+    },
+    {
+      "name": "Current summary", "kind": "card", "refersTo": "summary",
+      "description": "Current measurement, qualifier and secondary value; example values are placeholders.",
+      "html": "<article class=\"ds-summary\"><h2>CPU usage <span>all cores</span></h2><strong>—</strong><p>logical CPUs</p></article>",
+      "css": ".ds-summary{background:var(--panel,#f8faf9);color:var(--ink,#172c31);border-radius:5px;padding:14px 12px 12px;min-width:0;font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;font-variant-numeric:tabular-nums}.ds-summary h2{margin:0;text-transform:uppercase;letter-spacing:.07em;font-size:14px;line-height:1.5;font-weight:500}.ds-summary h2 span{float:right;color:var(--teal,#05829c);text-transform:none;letter-spacing:0}.ds-summary strong{display:block;text-align:center;font-size:clamp(23px,2.2vw,32px);line-height:1.6;font-weight:400;color:var(--good,#128260);white-space:nowrap}.ds-summary p{margin:0;text-align:right;font-size:14px;color:var(--violet,#7253c8);min-height:21px}@media(max-width:1280px){.ds-summary strong{font-size:28px}}@media(max-width:680px){.ds-summary{padding:10px}.ds-summary strong{font-size:27px}}"
+    },
+    {
+      "name": "Chart panel and legend", "kind": "card", "refersTo": "chart",
+      "description": "Six histories: all cores, CPU user/system, RAM or swap used, shared-policy CPU frequency in GHz, temperature and selected-interface network. Axes fit extrema including spikes with padded rounded bounds and span-sensitive precision. Percentages stay within 0–100; network and frequency stay nonnegative. Missing readings use fallback ranges.",
+      "html": "<article class=\"ds-chart\"><div class=\"ds-chart-head\"><h2>CPU usage (%)</h2><p><i></i>user <i class=\"ds-second\"></i>system</p></div></article>",
+      "css": ".ds-chart{background:var(--panel,#f8faf9);color:var(--ink,#172c31);border-radius:5px;padding:12px;min-width:0;font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace}.ds-chart-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px}.ds-chart h2{margin:0;text-transform:uppercase;letter-spacing:.07em;font-size:14px;line-height:1.5;font-weight:500}.ds-chart p{margin:0;font-size:14px;color:var(--muted,#586b6e);white-space:nowrap}.ds-chart i{display:inline-block;width:7px;height:7px;background:var(--teal,#05829c);border-radius:50%;margin:0 4px 0 6px}.ds-chart i.ds-second{background:var(--violet,#7253c8)}@media(max-width:680px){.ds-chart{padding:12px 10px}}"
+    },
+    {
+      "name": "Chart inspection tooltip", "kind": "custom",
+      "description": "Selected-chart floating date and mean values; synchronized cursors and series dots appear across plots. More than eight series use two value columns; long lists scroll with PageUp/PageDown while canvas focus remains. Left/Right and Home/End inspect windows; Escape clears inspection. Example text uses placeholders.",
+      "html": "<div class=\"ds-plot\"><div class=\"ds-guide\" aria-hidden=\"true\"></div><i class=\"ds-dot\" aria-hidden=\"true\"></i><div class=\"ds-tip\" aria-hidden=\"true\"><time>Window date/time</time><div class=\"ds-values\"><div class=\"ds-row\"><i></i><span>CPU 0</span><b>—</b></div></div></div><output class=\"ds-sr\" aria-live=\"polite\">CPU 0 average —, range —–—, peak —</output></div>",
+      "css": ".ds-plot{position:relative;height:210px;min-width:0;font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace}.ds-guide{position:absolute;left:60px;top:8px;bottom:32px;width:0;border-left:1px dotted var(--muted,#586b6e);opacity:.5;pointer-events:none}.ds-dot{position:absolute;left:60px;top:50%;width:6px;height:6px;border-radius:50%;transform:translate(-50%,-50%);background:var(--teal,#05829c);pointer-events:none}.ds-tip{position:absolute;left:72px;top:20px;z-index:2;width:max-content;min-width:128px;max-width:calc(100% - 12px);padding:8px 10px;border:1px solid var(--grid,#e3e9e7);border-radius:3px;background:var(--panel,#f8faf9);color:var(--ink,#172c31);box-shadow:0 3px 12px #00000016;font-size:14px;line-height:1.6;max-height:calc(100% - 12px);overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--muted,#586b6e) var(--panel,#f8faf9)}.ds-tip time{display:block;color:var(--muted,#586b6e);margin-bottom:4px;overflow-wrap:anywhere}.ds-row{display:grid;grid-template-columns:6px minmax(0,1fr) auto;gap:6px;align-items:center}.ds-row i{width:6px;height:6px;border-radius:50%;background:var(--teal,#05829c)}.ds-row span{overflow-wrap:anywhere}.ds-row b{font-weight:600;white-space:nowrap}.ds-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:12px}.ds-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}"
+    },
+    {
+      "name": "Sampling status", "kind": "custom",
+      "description": "Secondary status text with a healthy-state indicator; live age comes from the data.",
+      "html": "<p class=\"ds-status\" data-state=\"ok\" role=\"status\">uptime: — · sampled — ago</p>",
+      "css": ".ds-status{margin:4px 0 0;color:var(--muted,#586b6e);font:14px ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace}.ds-status[data-state=ok]::after{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good,#128260);margin-left:8px}.ds-status[data-state=error]{color:var(--ink,#172c31)}"
+    },
+    {
+      "name": "Interactive summary", "kind": "button", "refersTo": "summary-toggle",
+      "description": "Full-panel buttons toggle CPU user/system or estimated memory used/free; the network version cycles interfaces and shows compact U | D decimal rates. Labels identify the next action. Capacities use binary units; example text is a placeholder.",
+      "html": "<button class=\"ds-summary-toggle\" aria-label=\"Memory used. Show free memory\"><span class=\"ds-tile-heading\">Memory <span>used</span></span><strong>—</strong><span class=\"ds-tile-sub\">— of — · click to toggle</span></button>",
+      "css": ".ds-summary-toggle{display:block;width:100%;height:100%;padding:14px 12px 12px;border:0;border-radius:5px;background:var(--panel,#f8faf9);color:var(--ink,#172c31);font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;font-variant-numeric:tabular-nums;cursor:pointer}.ds-tile-heading{display:block;text-transform:uppercase;letter-spacing:.07em;font-size:14px;line-height:1.5;font-weight:500;text-align:left}.ds-tile-heading>span{float:right;color:var(--teal,#05829c);text-transform:none;letter-spacing:0}.ds-summary-toggle strong{display:block;text-align:center;font-size:clamp(23px,2.2vw,32px);line-height:1.6;font-weight:400;color:var(--good,#128260);white-space:nowrap}.ds-tile-sub{display:block;text-align:right;font-size:14px;color:var(--violet,#7253c8);min-height:21px;line-height:1.5}.ds-summary-toggle:hover{outline:1px solid var(--muted,#586b6e)}.ds-summary-toggle:focus-visible{outline:2px solid var(--teal,#05829c);outline-offset:0}.ds-summary-toggle:disabled{cursor:default}.ds-summary-toggle:disabled:hover{outline:0}@media(max-width:1280px){.ds-summary-toggle strong{font-size:28px}}@media(max-width:680px){.ds-summary-toggle{padding:10px}.ds-summary-toggle strong{font-size:27px}}"
+    },
+    {
+      "name": "RAM and swap history control", "kind": "button", "refersTo": "chart-control",
+      "description": "Switches the single-line memory chart between RAM-used and swap-used history; accessible name and pressed state reflect the selection.",
+      "html": "<button class=\"ds-chart-control\" aria-label=\"Show swap history\" aria-pressed=\"false\">show swap</button>",
+      "css": ".ds-chart-control{display:block;width:auto;height:24px;padding:0 6px;font:14px ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;white-space:nowrap;border:0;border-radius:6px;background:var(--panel,#f8faf9);color:var(--ink,#172c31);cursor:pointer}.ds-chart-control:hover{outline:1px solid var(--muted,#586b6e)}.ds-chart-control:focus-visible{outline:2px solid var(--teal,#05829c);outline-offset:3px}"
+    },
+    {
+      "name": "Filesystem capacity list", "kind": "card", "refersTo": "summary",
+      "description": "Full-width current capacities with one compact name/meter/used-total/available row per filesystem. Explicit binary units and accessible native meters; capacity text moves below the name and meter on narrow screens. This example uses placeholder values and an illustrative meter.",
+      "html": "<article class=\"ds-filesystems\"><h2>Filesystems <span>mounted</span></h2><ul class=\"ds-disk-list\" tabindex=\"0\" aria-label=\"Mounted local filesystem capacities\"><li><span class=\"ds-disk-label\" title=\"Full device source and mount\">source · mount</span><meter class=\"ds-disk-meter\" min=\"0\" max=\"1\" value=\"0.5\" aria-label=\"Illustrative used space\"></meter><span class=\"ds-disk-values\">— / — used | — Avail.</span></li></ul><p>Waiting for capacities…</p></article>",
+      "css": ".ds-filesystems{grid-column:1/-1;padding:14px 12px 12px;border-radius:5px;background:var(--panel,#f8faf9);color:var(--ink,#172c31);font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;font-variant-numeric:tabular-nums}.ds-filesystems h2{margin:0;text-transform:uppercase;letter-spacing:.07em;font-size:14px;line-height:1.5;font-weight:500}.ds-filesystems h2 span{float:right;color:var(--teal,#05829c);text-transform:none;letter-spacing:0}.ds-disk-list{list-style:none;padding:0;margin:10px 0;display:grid;grid-template-columns:minmax(0,1fr);gap:10px;max-height:200px;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--muted) var(--panel)}.ds-disk-list li{min-width:0;display:grid;grid-template-columns:minmax(80px,200px) minmax(60px,1fr) max-content;align-items:center;gap:12px;font-size:14px;line-height:1.5}.ds-disk-label{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ds-disk-values{font-weight:500;white-space:nowrap}.ds-disk-meter{display:block;appearance:none;width:100%;height:8px;border:0;border-radius:2px;background:var(--grid)}.ds-disk-meter::-webkit-meter-bar{height:8px;border:0;border-radius:2px;background:var(--grid);box-shadow:none}.ds-disk-meter::-webkit-meter-optimum-value{border-radius:2px;background:var(--teal)}.ds-disk-meter::-moz-meter-bar{border-radius:2px;background:var(--teal)}.ds-filesystems p{margin:0;text-align:right;font-size:14px;color:var(--violet,#7253c8);min-height:21px}.ds-disk-list:focus-visible{outline:2px solid var(--teal,#05829c);outline-offset:3px}@media(max-width:680px){.ds-filesystems{padding:10px}.ds-disk-list li{grid-template-columns:minmax(0,1fr) minmax(72px,1fr);gap:4px 10px}.ds-disk-values{grid-column:1/-1;white-space:normal;overflow-wrap:anywhere}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Technical dashboard",
+    "overview": "The supplied screenshot establishes a compact measurement surface: a pale background, near-white panels, monospaced values and restrained chart colors. Six compact summaries and a full-width filesystem capacity list sit above six history charts. Density serves comparison and reading measurements.\n\nThe source also provides a dark theme with the same hierarchy and geometry. System fonts, native controls and canvas plots keep the interface independent of external fonts, images and libraries. There are no decorative animations. All UI text, including canvas axes and tooltips, uses a minimum 14px font as requested by the user.",
+    "keyCharacteristics": [
+      "Compact monospaced measurements with tabular numerals.",
+      "Flat panels with quiet tonal separation.",
+      "Teal and violet series, with additional colors for all detected CPU cores.",
+      "Responsive grids that preserve measurement order."
+    ],
+    "rules": [
+      {"name": "The Series Identity Rule", "body": "Keep the series color order consistent between legends, lines, bands and peak marks.", "section": "colors"},
+      {"name": "The Measurement Context Rule", "body": "Preserve average, minimum/maximum and peak-time distinctions when displaying historical windows.", "section": "components"}
+    ],
+    "dos": [
+      "Do preserve the summary and chart order across responsive widths.",
+      "Do keep series colors consistent across legends and plot marks.",
+      "Do expose units, unavailable readings and stale data in text.",
+      "Do retain keyboard access and visible focus for charts and controls."
+    ],
+    "donts": [
+      "Don't add external fonts, images, chart libraries or decorative animation.",
+      "Don't replace averaged history with an unqualified instantaneous line.",
+      "Don't turn absent sensor values into zero readings."
+    ]
+  }
+}
