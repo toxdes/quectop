@@ -33,7 +33,8 @@ def main() -> None:
             "-Os", "-std=c11", "-Wall", "-Wextra", "-Werror", "-ffreestanding",
             "-fno-builtin", "-fno-stack-protector", "-fno-unwind-tables",
             "-fno-asynchronous-unwind-tables", "-fno-pie", "-ffunction-sections",
-            "-fdata-sections", str(ROOT / "test/abi.c"), str(ROOT / "arm.c"),
+            "-fdata-sections", str(ROOT / "test/abi.c"), str(ROOT / "boot.c"),
+            str(ROOT / "vendor/monocypher/monocypher.c"), str(ROOT / "vendor/monocypher/monocypher-ed25519.c"), str(ROOT / "arm.c"),
             str(ROOT / "start.S"), "-nostdlib", "-static",
             "-Wl,-no-pie,--gc-sections,--build-id=none,-z,noexecstack,-s", "-o", str(binary),
         ], check=True)

@@ -1,5 +1,5 @@
 /* Exercise kernel ABI and compiler integer helpers without libc. */
-#define entry collector_entry
+#define entry agent_entry
 #include "../main.c"
 #undef entry
 
@@ -61,7 +61,7 @@ void entry(long *stack) {
   }
   check(call4(N_close, fd, 0, 0, 0), "sparse close");
   struct fsinfo fs;
-  check(filesystem_info(directory_fd, &fs), "filesystem ABI");
+  check(filesystem_info(argv[1], &fs), "filesystem ABI");
   u8 stats[48];
   store_le64(stats, fs.bsize);
   store_le64(stats + 8, fs.blocks);

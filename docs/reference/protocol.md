@@ -1,0 +1,100 @@
+# Hub protocol reference (v3)
+
+The agent streams to the hub over one TCP connection. All integers are little-endian. `protocol.h` defines the constants, `noise.h` the handshake, `uplink.h` the agent side, and `hub/intake.h` the hub side.
+
+Agents and hubs that use different protocol versions cannot connect. Upgrade them together.
+
+## Messages
+
+Every message is a `u16` length, then that many bytes. The largest message is 65535 bytes.
+
+## Connection sequence
+
+1. **OPEN**, agent to hub, unencrypted:
+
+	| Bytes | Field |
+	| --- | --- |
+	| 4 | `"QTOP"` |
+	| 1 | Protocol version, `3` |
+	| 1 | ID length, 1–64 |
+	| n | Host ID, `[A-Za-z0-9_.-]`, no leading dot |
+
+	The OPEN message is also the Noise prologue. A change to any byte makes the handshake fail.
+
+2. **Noise message 1** (`psk, e`), agent to hub. Its encrypted payload is:
+
+	| Bytes | Field |
+	| --- | --- |
+	| 4 | Agent `--publish-ms` |
+	| 1 | Host name length, 0–64 |
+	| n | Host name |
+
+3. **Noise message 2** (`e, ee`), hub to agent, with an empty payload. It is 48 bytes. If the agent cannot decrypt the message, it disconnects and sends nothing else.
+
+4. **Frames.** Every later message is one frame, sealed with the transport keys from the handshake. Each sealed frame ends with a 16-byte tag.
+
+## Handshake
+
+The handshake is `Noise_NNpsk0_25519_ChaChaPoly_SHA512` from the [Noise Protocol Framework](https://noiseprotocol.org/noise.html), revision 34.
+
+| Part | Choice |
+| --- | --- |
+| Pre-shared key | The device key from the keys file, 256 bits. All zeros without a keys file. |
+| Key exchange | X25519. Both sides use a new 256-bit ephemeral key for each connection. |
+| Cipher | ChaCha20-Poly1305 (IETF), 256-bit key, 128-bit tag |
+| Nonce | 64-bit counter for each direction |
+| Hash | SHA-512 |
+
+**Authentication.** The hub looks up the pre-shared key by the host ID in OPEN. Only a side that holds the key can complete the handshake. Each new connection uses new ephemeral keys, so a key that leaks later cannot decrypt recorded traffic.
+
+**Replay.** An attacker can replay message 1. The hub treats a device as connected only after the device's first sealed frame decrypts. Until then, the connection may stay open for 10 s.
+
+**Visible data.** The host ID in OPEN is not encrypted. The host name is encrypted.
+
+## Frames
+
+A frame is a `u8` type, a `u24` payload length, and the payload. A frame is at most 65515 bytes, so one sealed frame fills at most one message.
+
+| Type | Name | Direction | Payload |
+| ---: | --- | --- | --- |
+| 2 | RING | agent to hub | `u8` tier (0–4), then the ring file's 64-byte header and device metadata. Sent once for each tier. |
+| 3 | RESUME | hub to agent | Five `u32` values: for each tier, the start of the newest valid bucket the hub holds, or `0` for none. |
+| 4 | RECORD | agent to hub | `u8` tier, then one bucket, byte for byte as the ring file stores it. |
+| 5 | LIVE | agent to hub | A complete `live.v1.bin`. |
+| 6 | DISKS | agent to hub | A complete `disks.v1.bin`. |
+
+Tiers 0–4 are `1h`, `1d`, `7d`, `30d`, and `90d`.
+
+## Stream order
+
+After the handshake, the two sides do these steps:
+
+1. The agent sends five RING frames.
+2. The hub keeps each replica ring whose header matches. It recreates the others.
+3. The hub sends RESUME.
+4. For each tier, the agent sends the buckets after the hub's newest, oldest first. It reads them from its ring files. Buckets not yet flushed come from memory.
+5. The agent sends the latest LIVE and DISKS snapshots.
+6. The agent sends each new bucket and snapshot when it writes them.
+
+While a tier is still sending old buckets, the agent does not send that tier's new buckets directly. The catch-up reaches them later, so the hub's newest bucket never runs ahead of a gap.
+
+## Validation
+
+**The hub checks every frame before it writes to a replica.** It checks the type, the length, the magic number, the version, and the checksum. A bucket is written at the slot that its start time selects. Snapshots are replaced atomically.
+
+**Any invalid message closes the connection.** These are invalid:
+
+- A frame that does not decrypt.
+- A frame whose length does not match its header.
+- An unexpected frame type.
+- A bad header or checksum in the payload.
+
+## Conformance
+
+`test/crypto.py` checks the cryptography against suites written outside this project:
+
+- [Wycheproof](https://github.com/C2SP/wycheproof) vectors for ChaCha20-Poly1305, X25519, HMAC-SHA512, and HKDF-SHA512.
+- The [cacophony](https://github.com/haskell-cryptography/cacophony) test vector for `Noise_NNpsk0_25519_ChaChaPoly_SHA512`.
+- Random sessions against the [`noiseprotocol`](https://pypi.org/project/noiseprotocol/) Python package, including tampered messages and wrong keys.
+
+`test/hub.py` runs a real agent against a Python hub, and a Python agent against the real hub.

@@ -16,6 +16,7 @@ _Static_assert(sizeof(long) == 8, "64-bit Linux ABI required");
 enum {
   N_read = 0,
   N_write = 1,
+  N_getdents = 217,
   N_close = 3,
   N_seek = 8,
   N_pread = 17,
@@ -24,20 +25,27 @@ enum {
   N_unmap = 11,
   N_socket = 41,
   N_connect = 42,
+  N_bind = 49,
+  N_listen = 50,
+  N_accept = 288, /* accept4 */
+  N_setsockopt = 54,
   N_send = 44,
   N_geteuid = 107,
   N_ppoll = 271,
   N_flock = 73,
   N_truncate = 77,
   N_statfs = 137,
-  N_fstatfs = 138,
+  N_uname = 63,
   N_clock = 228,
   N_sleep = 230,
   N_exit = 231,
   N_open = 257,
   N_mkdir = 258,
   N_unlink = 263,
-  N_rename = 264
+  N_rename = 264,
+  N_getrandom = 318,
+  N_statx = 332,
+  N_mprotect = 10
 };
 static inline long call4(long n, long a, long b, long c, long d) {
   register long r10 __asm__("r10") = d;
@@ -64,6 +72,7 @@ static inline long call6(long n, long a, long b, long c, long d, long e,
 enum {
   N_read = 63,
   N_write = 64,
+  N_getdents = 61,
   N_close = 57,
   N_seek = 62,
   N_pread = 67,
@@ -72,20 +81,27 @@ enum {
   N_unmap = 215,
   N_socket = 198,
   N_connect = 203,
+  N_bind = 200,
+  N_listen = 201,
+  N_accept = 242, /* accept4 */
+  N_setsockopt = 208,
   N_send = 206,
   N_geteuid = 175,
   N_ppoll = 73,
   N_flock = 32,
   N_truncate = 46,
   N_statfs = 43,
-  N_fstatfs = 44,
+  N_uname = 160,
   N_clock = 113,
   N_sleep = 115,
   N_exit = 94,
   N_open = 56,
   N_mkdir = 34,
   N_unlink = 35,
-  N_rename = 38
+  N_rename = 38,
+  N_getrandom = 278,
+  N_statx = 291,
+  N_mprotect = 226
 };
 static inline long call4(long n, long a, long b, long c, long d) {
   register long x8 __asm__("x8") = n;
@@ -122,6 +138,7 @@ _Static_assert(sizeof(long) == 4, "32-bit ARM EABI required");
 enum {
   N_read = 3,
   N_write = 4,
+  N_getdents = 217,
   N_close = 6,
   N_seek = 140, /* _llseek: result is returned through a u64 pointer. */
   N_pread = 180,
@@ -130,19 +147,27 @@ enum {
   N_unmap = 91,
   N_socket = 281,
   N_connect = 283,
+  N_bind = 282,
+  N_listen = 284,
+  N_accept = 366, /* accept4 */
+  N_setsockopt = 294,
   N_send = 290,
   N_geteuid = 201,
   N_ppoll = 414, /* ppoll_time64, Linux >= 5.1 */
   N_flock = 143,
   N_truncate = 194,
-  N_fstatfs = 267,
+  N_statfs = 266, /* statfs64: takes the structure size. */
+  N_uname = 122,
   N_clock = 403,
   N_sleep = 407,
   N_exit = 248,
   N_open = 322,
   N_mkdir = 323,
   N_unlink = 328,
-  N_rename = 329
+  N_rename = 329,
+  N_getrandom = 384,
+  N_statx = 397,
+  N_mprotect = 125
 };
 static inline long call4(long n, long a, long b, long c, long d) {
   register long r7 __asm__("r7") = n;
@@ -181,7 +206,9 @@ static inline long call6(long n, long a, long b, long c, long d, long e,
 #define RDWR 2
 #define CREATE 64
 #define EXCL 128
+#define APPEND 0x400
 #define TRUNC 512
+#define PATH_ONLY 0x200000
 #if defined(__aarch64__) || defined(__arm__)
 #define DIRECTORY (1 << 14)
 #define NOFOLLOW (1 << 15)
@@ -247,11 +274,11 @@ static inline long truncate_file(long fd, u64 bytes) {
   return call4(N_truncate, fd, (long)bytes, 0, 0);
 #endif
 }
-static inline long filesystem_info(long fd, struct fsinfo *fs) {
+static inline long filesystem_info(const char *path, struct fsinfo *fs) {
 #if defined(__arm__)
-  return call4(N_fstatfs, fd, sizeof(*fs), (long)fs, 0);
+  return call4(N_statfs, (long)path, sizeof(*fs), (long)fs, 0);
 #else
-  return call4(N_fstatfs, fd, (long)fs, 0, 0);
+  return call4(N_statfs, (long)path, (long)fs, 0, 0);
 #endif
 }
 static u64 clock_ns(int which) {

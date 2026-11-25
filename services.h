@@ -3,9 +3,80 @@
  * Each publication has one 100 ms deadline, including connection setup.
  * Protocol: https://dbus.freedesktop.org/doc/dbus-specification.html
  * Properties: org.freedesktop.systemd1.Unit and .Service. */
-static long service_bus = -1;
-static u32 service_serial, service_body, service_end;
+enum service_backend { SERVICE_NONE, SERVICE_SYSTEMD, SERVICE_OPENRC };
+enum service_status {
+  SERVICE_UNAVAILABLE = 0,
+  SERVICE_INACTIVE = 1,
+  SERVICE_ACTIVE = 2,
+  SERVICE_FAILED = 3,
+  SERVICE_ACTIVATING = 4,
+  SERVICE_STOPPING = 5,
+  SERVICE_RELOADING = 6,
+  SERVICE_UNKNOWN = 7
+};
+enum service_flag {
+  SERVICE_STATUS_MASK = 7,
+  SERVICE_HAS_MEMORY = 8,
+  SERVICE_HAS_UPTIME = 16,
+  SERVICE_HAS_MAPPED = 32,
+  SERVICE_IS_OPENRC = 64,
+  SERVICE_PROCESS_AGE = 128
+};
+enum service_metric {
+  SERVICE_RSS,
+  SERVICE_PSS,
+  SERVICE_USS,
+  SERVICE_ANON,
+  SERVICE_FILE,
+  SERVICE_SHMEM,
+  SERVICE_MAPPED_COUNT
+};
+#define SERVICE_MAPPED_ALL ((1U << SERVICE_MAPPED_COUNT) - 1)
+#define SERVICE_ENTRY_OVERHEAD (1 + 4 * 10 + 1 + (4 * 17 + 7) / 8)
+static enum service_backend service_backend;
+static const char *services_option;
+static char **service_names, *service_strings;
+static u32 service_count, service_string_bytes;
+static long service_openrc = -1, service_proc = -1, service_cgroups = -1;
+static unsigned long service_clock_ticks;
+static u32 service_first;
 static u64 service_deadline;
+
+struct service_observation {
+  u64 memory, uptime;
+  u64 mapped[SERVICE_MAPPED_COUNT]; /* KiB, indexed by service_metric. */
+  u8 mapped_valid;
+  u8 flags;
+};
+
+static int service_exists(long directory, const char *name) {
+  if (clock_ns(1) >= service_deadline)
+    return 0;
+  long fd = openat(directory, name, PATH_ONLY | NOFOLLOW, 0);
+  if (fd < 0)
+    return 0;
+  call4(N_close, fd, 0, 0, 0);
+  return 1;
+}
+
+static void service_detect(char **env) {
+  long fd = openat(AT_CWD, "/run/systemd/system", RDONLY | DIRECTORY, 0);
+  if (fd >= 0) {
+    service_backend = SERVICE_SYSTEMD;
+    call4(N_close, fd, 0, 0, 0);
+  } else {
+    service_openrc = openat(AT_CWD, "/run/openrc", RDONLY | DIRECTORY, 0);
+    if (service_openrc >= 0)
+      service_backend = SERVICE_OPENRC;
+  }
+  service_proc = openat(AT_CWD, "/proc", RDONLY | DIRECTORY, 0);
+  service_cgroups = openat(AT_CWD, "/sys/fs/cgroup", RDONLY | DIRECTORY, 0);
+  while (*env)
+    ++env;
+  for (unsigned long *aux = (unsigned long *)(env + 1); aux[0]; aux += 2)
+    if (aux[0] == 17) /* AT_CLKTCK, independent of kernel CONFIG_HZ. */
+      service_clock_ticks = aux[1];
+}
 
 static int service_hex(char c) {
   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
@@ -31,20 +102,27 @@ static u32 service_name_size(const char *s, u32 n) {
   int match = n >= 8;
   for (u32 i = 0; match && i < 8; ++i)
     match = s[n - 8 + i] == suffix[i];
-  if (!match)
+  if (!match && service_backend == SERVICE_SYSTEMD)
     bytes += 8;
   if (bytes > 255)
     fail("service name exceeds 255 bytes including .service");
   return bytes;
 }
-static void measure_services(void) {
+/* Length of one --services entry, up to the next comma. */
+static inline __attribute__((always_inline)) u32
+service_token(const char *s) {
+  u32 n = 0;
+  while (s[n] && s[n] != ',')
+    ++n;
+  return n;
+}
+static void measure_services(char **env) {
   if (!services_option)
     return;
+  service_detect(env);
   const char *s = services_option;
   for (;;) {
-    u32 n = 0;
-    while (s[n] && s[n] != ',')
-      ++n;
+    u32 n = service_token(s);
     service_string_bytes += service_name_size(s, n) + 1;
     if (++service_count > 65535)
       fail("too many services");
@@ -60,9 +138,7 @@ static void initialize_services(void) {
   char *out = service_strings;
   service_count = 0;
   for (;;) {
-    u32 n = 0;
-    while (s[n] && s[n] != ',')
-      ++n;
+    u32 n = service_token(s);
     u32 size = service_name_size(s, n);
     memcpy(out, s, n);
     if (size > n)
@@ -80,218 +156,8 @@ static void initialize_services(void) {
     s += n + 1;
   }
 }
-static void service_disconnect(void) {
-  if (service_bus >= 0)
-    call4(N_close, service_bus, 0, 0, 0);
-  service_bus = -1;
-}
-static int service_wait(short events) {
-  struct {
-    int fd;
-    short events, revents;
-  } descriptor = {(int)service_bus, events, 0};
-  for (;;) {
-    u64 now = clock_ns(1);
-    if (!now || now >= service_deadline)
-      return 0;
-    u64 left = service_deadline - now;
-    struct timespec timeout = {left / 1000000000ULL, left % 1000000000ULL};
-    long result = call6(N_ppoll, (long)&descriptor, 1, (long)&timeout, 0, 8, 0);
-    if (result == -4)
-      continue;
-    return result > 0 && (descriptor.revents & events);
-  }
-}
-static int service_transfer(void *data, u32 bytes, int writing) {
-  u8 *p = data;
-  while (bytes) {
-    if (clock_ns(1) >= service_deadline)
-      return 0;
-    long n = writing
-                 ? call6(N_send, service_bus, (long)p, bytes, 0x4000, 0, 0)
-                 : call4(N_read, service_bus, (long)p, bytes, 0);
-    if (n == -4)
-      continue;
-    if (n == -11 && service_wait(writing ? 4 : 1))
-      continue;
-    if (n <= 0)
-      return 0;
-    p += n;
-    bytes -= (u32)n;
-  }
-  return 1;
-}
-static u32 service_string(u32 at, const char *s) {
-  at = (at + 3) & ~3U;
-  u32 n = (u32)length(s);
-  store_le32((u8 *)input + at, n);
-  memcpy(input + at + 4, s, n + 1);
-  return at + 5 + n;
-}
-static u32 service_field(u32 at, u8 field, char type, const char *s) {
-  at = (at + 7) & ~7U;
-  input[at++] = (char)field;
-  input[at++] = 1;
-  input[at++] = type;
-  input[at++] = 0;
-  if (type != 'g')
-    return service_string(at, s);
-  u32 n = (u32)length(s);
-  input[at++] = (char)n;
-  memcpy(input + at, s, n + 1);
-  return at + n + 1;
-}
-/* A property reply is small. Reject larger/unrecognized frames and reconnect
- * on the next publication rather than allocating from untrusted wire lengths. */
-static int service_reply(u32 serial) {
-  for (;;) {
-    if (!service_transfer(input, 16, 0) || input[0] != 'l' || input[3] != 1)
-      break;
-    u32 body = load_le32((u8 *)input + 4),
-        header = load_le32((u8 *)input + 12);
-    if (header > sizeof(input) - 16)
-      break;
-    service_body = (16 + header + 7) & ~7U;
-    if (body > sizeof(input) - service_body)
-      break;
-    service_end = service_body + body;
-    if (!service_transfer(input + 16, service_end - 16, 0))
-      break;
-    u32 reply = 0, at = 16;
-    while (at < 16 + header) {
-      at = (at + 7) & ~7U;
-      if (at + 4 > 16 + header || input[at + 1] != 1 || input[at + 3])
-        goto broken;
-      u8 field = (u8)input[at], type = (u8)input[at + 2];
-      at += 4;
-      if (type == 'u') {
-        if (at + 4 > 16 + header)
-          goto broken;
-        if (field == 5)
-          reply = load_le32((u8 *)input + at);
-        at += 4;
-      } else if (type == 's' || type == 'o' || type == 'g') {
-        u32 n;
-        if (type == 'g') {
-          if (at >= 16 + header)
-            goto broken;
-          n = (u8)input[at++];
-        } else {
-          if (at + 4 > 16 + header)
-            goto broken;
-          n = load_le32((u8 *)input + at);
-          at += 4;
-        }
-        if (n >= 16 + header - at || input[at + n])
-          goto broken;
-        at += n + 1;
-      } else
-        goto broken;
-    }
-    if (reply == serial && (input[1] == 2 || input[1] == 3))
-      return input[1] == 2;
-    /* Hello may be interleaved with NameAcquired; no match rules are installed. */
-  }
-broken:
-  service_disconnect();
-  return -1;
-}
-static int service_call(const char *path, const char *interface_name,
-                        const char *member, const char *signature,
-                        const char *first, const char *second) {
-  if (service_bus < 0)
-    return -1;
-  memset(input, 0, sizeof(input));
-  input[0] = 'l';
-  input[1] = 1;
-  input[2] = 2; /* Do not activate a missing destination. */
-  input[3] = 1;
-  if (!++service_serial)
-    ++service_serial;
-  store_le32((u8 *)input + 8, service_serial);
-  u32 at = service_field(16, 1, 'o', path);
-  at = service_field(at, 2, 's', interface_name);
-  at = service_field(at, 3, 's', member);
-  at = service_field(at, 6, 's', equal(member, "Hello")
-                                      ? "org.freedesktop.DBus"
-                                      : "org.freedesktop.systemd1");
-  if (*signature)
-    at = service_field(at, 8, 'g', signature);
-  store_le32((u8 *)input + 12, at - 16);
-  u32 body = (at + 7) & ~7U;
-  at = body;
-  if (first)
-    at = service_string(at, first);
-  if (second)
-    at = service_string(at, second);
-  store_le32((u8 *)input + 4, at - body);
-  if (!service_transfer(input, at, 1)) {
-    service_disconnect();
-    return -1;
-  }
-  return service_reply(service_serial);
-}
-static int service_connect(void) {
-  if (service_bus >= 0)
-    return 1;
-  /* AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC. */
-  service_bus = call4(N_socket, 1, 0x80801, 0, 0);
-  if (service_bus < 0)
-    return 0;
-  struct {
-    u16 family;
-    char path[sizeof("/run/dbus/system_bus_socket")];
-  } address = {1, "/run/dbus/system_bus_socket"};
-  if (call4(N_connect, service_bus, (long)&address,
-            2 + sizeof(address.path), 0) < 0)
-    goto failed;
-  static const char auth[] = "\0AUTH EXTERNAL ";
-  memcpy(input, auth, sizeof(auth) - 1);
-  u32 at = sizeof(auth) - 1;
-  char digits[10];
-  u32 count = 0, uid = (u32)call4(N_geteuid, 0, 0, 0, 0);
-  do {
-    digits[count++] = (char)('0' + uid % 10);
-    uid /= 10;
-  } while (uid);
-  while (count) {
-    char c = digits[--count];
-    input[at++] = '3';
-    input[at++] = c;
-  }
-  input[at++] = '\r';
-  input[at++] = '\n';
-  if (!service_transfer(input, at, 1))
-    goto failed;
-  at = 0;
-  do {
-    if (at == 128 || !service_transfer(input + at, 1, 0))
-      goto failed;
-    ++at;
-  } while (at < 2 || input[at - 2] != '\r' || input[at - 1] != '\n');
-  if (at < 5 || input[0] != 'O' || input[1] != 'K' || input[2] != ' ')
-    goto failed;
-  memcpy(input, "BEGIN\r\n", 7);
-  if (!service_transfer(input, 7, 1) ||
-      service_call("/org/freedesktop/DBus", "org.freedesktop.DBus", "Hello", "",
-                   0, 0) != 1)
-    goto failed;
-  return 1;
-failed:
-  service_disconnect();
-  return 0;
-}
-static int service_property(const char *path, const char *interface_name,
-                            const char *property, char type) {
-  return service_call(path, "org.freedesktop.DBus.Properties", "Get", "ss",
-                      interface_name, property) == 1 &&
-         service_end >= service_body + 3 && input[service_body] == 1 &&
-         input[service_body + 1] == type && !input[service_body + 2];
-}
-static u64 service_u64(void) {
-  return (u64)load_le32((u8 *)input + service_body + 8) |
-         ((u64)load_le32((u8 *)input + service_body + 12) << 32);
-}
+#include "service_dbus.h"
+
 static u32 service_varint(u8 *dest, u32 at, u64 value) {
   do {
     u8 byte = (u8)(value & 127);
@@ -300,67 +166,255 @@ static u32 service_varint(u8 *dest, u32 at, u64 value) {
   } while (value);
   return at;
 }
+static char *service_read(long directory, const char *name) {
+  if (directory < 0 || clock_ns(1) >= service_deadline)
+    return 0;
+  long fd = openat(directory, name, RDONLY | NOFOLLOW | 2048, 0);
+  char *result = read_proc(fd);
+  if (fd >= 0)
+    call4(N_close, fd, 0, 0, 0);
+  return result;
+}
+
+static int service_counter(long directory, const char *name, u64 *value) {
+  const char *s = service_read(directory, name);
+  if (!s || !number(&s, value))
+    return 0;
+  while (*s == ' ' || *s == '\n' || *s == '\t')
+    ++s;
+  return !*s;
+}
+
+static int service_path(char *dest, unsigned long capacity, const char *prefix,
+                        const char *name, const char *suffix) {
+  const char *parts[] = {prefix, name, suffix};
+  unsigned long at = 0;
+  for (int i = 0; i < 3; ++i)
+    for (const char *p = parts[i]; *p; ++p) {
+      if (at + 1 == capacity)
+        return 0;
+      dest[at++] = *p;
+    }
+  dest[at] = 0;
+  return 1;
+}
+
+static long service_openrc_group(const char *name) {
+  static const char *const prefixes[] = {"openrc.", "unified/openrc.",
+                                         "openrc/"};
+  char path[280];
+  for (u32 i = 0; i < 3; ++i) {
+    if (clock_ns(1) >= service_deadline)
+      return -1;
+    if (!service_path(path, sizeof(path), prefixes[i], name, ""))
+      return -1;
+    long fd = openat(service_cgroups, path, RDONLY | DIRECTORY | NOFOLLOW, 0);
+    if (fd >= 0)
+      return fd;
+  }
+  return -1;
+}
+
+#include "service_memory.h"
+
+static void observe_openrc(const char *name, struct service_observation *row) {
+  row->flags = SERVICE_IS_OPENRC;
+  if (clock_ns(1) >= service_deadline)
+    return;
+  static const char *const states[] = {"failed/", "stopping/", "starting/",
+                                       "inactive/", "started/"};
+  static const u8 status[] = {SERVICE_FAILED, SERVICE_STOPPING,
+                              SERVICE_ACTIVATING, SERVICE_INACTIVE,
+                              SERVICE_ACTIVE};
+  char path[300];
+  for (u32 i = 0; i < 5; ++i) {
+    if (!service_path(path, sizeof(path), states[i], name, ""))
+      return;
+    if (service_exists(service_openrc, path)) {
+      row->flags |= status[i];
+      break;
+    }
+  }
+  if (!(row->flags & SERVICE_STATUS_MASK)) {
+    if (service_path(path, sizeof(path), "/etc/init.d/", name, "") &&
+        service_exists(AT_CWD, path))
+      row->flags |= SERVICE_INACTIVE;
+  }
+  if ((row->flags & SERVICE_STATUS_MASK) == SERVICE_ACTIVE &&
+      service_path(path, sizeof(path), "options/", name, "/child_pid")) {
+    u64 pid;
+    int found = service_counter(service_openrc, path, &pid);
+    if (!found && service_path(path, sizeof(path), "daemons/", name, "/001")) {
+      const char *line = service_read(service_openrc, path);
+      while (line && *line) {
+        if (prefix(line, "pidfile=")) {
+          line += 8;
+          const char *end = line;
+          while (*end && *end != '\n')
+            ++end;
+          unsigned long n = (unsigned long)(end - line);
+          if (n && n < sizeof(path) && *line == '/') {
+            memcpy(path, line, n);
+            path[n] = 0;
+            found = service_counter(AT_CWD, path, &pid);
+          }
+          break;
+        }
+        while (*line && *line != '\n')
+          ++line;
+        if (*line)
+          ++line;
+      }
+    }
+    if (found && pid && pid <= 0xffffffffU)
+      observe_process_uptime((u32)pid, row);
+  }
+  long group = service_openrc_group(name);
+  if (group >= 0) {
+    if (service_counter(group, "memory.current", &row->memory) ||
+        service_counter(group, "memory.usage_in_bytes", &row->memory))
+      row->flags |= SERVICE_HAS_MEMORY;
+    observe_service_memory(group, row);
+    call4(N_close, group, 0, 0, 0);
+  }
+  if (!(row->flags & SERVICE_HAS_MEMORY) &&
+      service_path(path, sizeof(path), "memory/openrc_", name,
+                   "/memory.usage_in_bytes") &&
+      service_counter(service_cgroups, path, &row->memory)) {
+    row->flags |= SERVICE_HAS_MEMORY;
+  }
+}
+
+static void observe_systemd(const char *name, struct service_observation *row) {
+  static const char unit_interface[] = "org.freedesktop.systemd1.Unit";
+  static const char service_interface[] = "org.freedesktop.systemd1.Service";
+  if (service_call("/org/freedesktop/systemd1",
+                   "org.freedesktop.systemd1.Manager", "GetUnit", "s", name,
+                   0) != 1)
+    return;
+  char path[800]; /* At most 3 escaped bytes per byte of a 255-byte name. */
+  u32 path_bytes;
+  const char *unit_path = service_reply_string(service_body, &path_bytes);
+  if (!unit_path || path_bytes >= sizeof(path))
+    return;
+  memcpy(path, unit_path, path_bytes + 1);
+
+  const char *state =
+      service_property_string(path, unit_interface, "ActiveState");
+  if (state) {
+    static const char *const states[] = {
+        "",           "inactive",     "active",   "failed",
+        "activating", "deactivating", "reloading"};
+    row->flags = SERVICE_UNKNOWN;
+    for (u32 k = SERVICE_INACTIVE; k <= SERVICE_RELOADING; ++k)
+      if (equal(state, states[k]))
+        row->flags = (u8)k;
+  }
+  u64 start;
+  if ((row->flags == SERVICE_ACTIVE || row->flags == SERVICE_RELOADING) &&
+      service_property_counter(path, unit_interface,
+                               "ActiveEnterTimestampMonotonic", &start)) {
+    u64 now = clock_ns(1) / 1000;
+    if (start && start <= now) {
+      row->uptime = (now - start) / 1000000;
+      row->flags |= SERVICE_HAS_UPTIME;
+    }
+  }
+  if (service_property_counter(path, service_interface, "MemoryCurrent",
+                               &row->memory) &&
+      row->memory != ~0ULL)
+    row->flags |= SERVICE_HAS_MEMORY;
+
+  const char *group_path =
+      service_property_string(path, service_interface, "ControlGroup");
+  if (!group_path || group_path[0] != '/' || !group_path[1])
+    return;
+  long group =
+      openat(service_cgroups, group_path + 1, RDONLY | DIRECTORY | NOFOLLOW, 0);
+  if (group >= 0) {
+    observe_service_memory(group, row);
+    call4(N_close, group, 0, 0, 0);
+  }
+}
+
+/* Absolute KiB value with four significant digits: mantissa(14), one
+ * optional decimal digit, binary unit(2) for KiB/MiB/GiB/TiB. */
+static u32 service_pack(u64 kib) {
+  u64 factor = 1;
+  u32 unit = 0;
+  while (unit < 3 && kib / factor >= 10000) {
+    factor *= 1024;
+    ++unit;
+  }
+  for (;;) {
+    u64 integer = kib / factor, scaled = kib * 10;
+    u32 decimals = integer <= 999 ? 1 : 0;
+    u64 mantissa = decimals ? scaled / factor + (scaled % factor * 2 >= factor)
+                            : integer + ((kib % factor) * 2 >= factor);
+    if (mantissa <= 9999)
+      return (mantissa << 3) | ((u32)decimals << 2) | unit;
+    if (decimals) {
+      mantissa = integer + ((kib % factor) * 2 >= factor);
+      if (mantissa <= 9999)
+        return (mantissa << 3) | unit;
+    }
+    if (unit == 3)
+      fail("service memory exceeds packed format limit");
+    factor *= 1024;
+    ++unit;
+  }
+}
+static u32 encode_service(u8 *dest, const char *name,
+                          struct service_observation *row) {
+  u32 n = (u32)length(name), at = 0;
+  u8 mask = row->mapped_valid;
+  for (u32 i = SERVICE_USS; i < SERVICE_MAPPED_COUNT; ++i)
+    if (!(mask & (1U << SERVICE_PSS)) ||
+        row->mapped[i] > row->mapped[SERVICE_PSS])
+      mask &= (u8) ~(1 << i);
+  dest[at++] = (u8)n;
+  dest[at++] = row->flags | (mask ? SERVICE_HAS_MAPPED : 0);
+  memcpy(dest + at, name, n);
+  at += n;
+  if (row->flags & SERVICE_HAS_MEMORY)
+    at = service_varint(dest, at, row->memory);
+  if (row->flags & SERVICE_HAS_UPTIME)
+    at = service_varint(dest, at, row->uptime);
+  if (mask) {
+    dest[at++] = mask;
+    for (u32 i = SERVICE_RSS; i <= SERVICE_PSS; ++i)
+      if (mask & (1 << i))
+        at = service_varint(dest, at, row->mapped[i]);
+    u32 bit = 0;
+    /* Up to four 17-bit packed values; put() ORs into zeroed bytes. */
+    memset(dest + at, 0, 9);
+    for (u32 i = SERVICE_USS; i < SERVICE_MAPPED_COUNT; ++i)
+      if (mask & (1 << i))
+        put(dest + at, &bit, service_pack(row->mapped[i]), 17);
+    at += (bit + 7) / 8;
+  }
+  return at;
+}
+
 static u32 encode_services(u8 *dest) {
   if (!service_count)
     return 0;
   service_deadline = clock_ns(1) + 100000000ULL;
-  service_connect();
+  if (service_backend == SERVICE_SYSTEMD)
+    service_connect();
   u32 at = 0;
   for (u32 i = 0; i < service_count; ++i) {
-    const char *name = service_names[i];
-    u32 n = (u32)length(name);
-    dest[at++] = (u8)n;
-    u32 flags_at = at++;
-    memcpy(dest + at, name, n);
-    at += n;
-    u8 flags = 0;
-    u64 memory = 0, uptime = 0;
-    if (service_call("/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
-                     "GetUnit", "s", name, 0) == 1 &&
-        service_end >= service_body + 5) {
-      n = load_le32((u8 *)input + service_body);
-      char path[800]; /* At most 3 escaped bytes per byte of a 255-byte name. */
-      if (n < sizeof(path) && n < service_end - service_body - 4 &&
-          !input[service_body + 4 + n]) {
-        memcpy(path, input + service_body + 4, n + 1);
-        if (service_property(path, "org.freedesktop.systemd1.Unit", "ActiveState",
-                             's') && service_end >= service_body + 9) {
-          n = load_le32((u8 *)input + service_body + 4);
-          if (n < service_end - service_body - 8 &&
-              !input[service_body + 8 + n]) {
-            static const char *const states[] = {"", "inactive", "active", "failed",
-                                                 "activating", "deactivating",
-                                                 "reloading"};
-            flags = 7;
-            for (u32 k = 1; k < 7; ++k)
-              if (equal(input + service_body + 8, states[k]))
-                flags = (u8)k;
-          }
-        }
-        if ((flags == 2 || flags == 6) &&
-            service_property(path, "org.freedesktop.systemd1.Unit",
-                             "ActiveEnterTimestampMonotonic", 't') &&
-            service_end >= service_body + 16) {
-          u64 start = service_u64(), now = clock_ns(1) / 1000;
-          if (start && start <= now) {
-            uptime = (now - start) / 1000000;
-            flags |= 16;
-          }
-        }
-        if (service_property(path, "org.freedesktop.systemd1.Service",
-                             "MemoryCurrent", 't') &&
-            service_end >= service_body + 16) {
-          memory = service_u64();
-          if (memory != ~0ULL)
-            flags |= 8;
-        }
-      }
+    const char *name = service_names[(service_first + i) % service_count];
+    struct service_observation row = {0};
+    row.flags = service_backend == SERVICE_OPENRC ? SERVICE_IS_OPENRC : 0;
+    if (clock_ns(1) < service_deadline) {
+      if (service_backend == SERVICE_SYSTEMD)
+        observe_systemd(name, &row);
+      else if (service_backend == SERVICE_OPENRC)
+        observe_openrc(name, &row);
     }
-    dest[flags_at] = flags;
-    if (flags & 8)
-      at = service_varint(dest, at, memory);
-    if (flags & 16)
-      at = service_varint(dest, at, uptime);
+    at += encode_service(dest + at, name, &row);
   }
+  service_first = (service_first + 1) % service_count;
   return at;
 }

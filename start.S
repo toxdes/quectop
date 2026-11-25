@@ -5,14 +5,14 @@ _start:
     xor %ebp, %ebp
     mov %rsp, %rdi
     and $-16, %rsp
-    call entry
+    call start
     ud2
 #elif defined(__aarch64__)
 .text
 .global _start
 _start:
     mov x0, sp
-    bl entry
+    bl start
     brk 0
 #elif defined(__arm__)
 .syntax unified
@@ -23,7 +23,7 @@ _start:
 _start:
     mov r0, sp
     bic sp, sp, #7
-    bl entry
+    bl start
     udf #0
 
 /* EABI division returns the remainder in extra registers, unlike C. */

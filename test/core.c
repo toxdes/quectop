@@ -1,10 +1,88 @@
 #ifdef QUECTOP_TEST_FREESTANDING
-#define entry collector_entry
+#define entry agent_entry
 #endif
 #include "../main.c"
 #ifdef QUECTOP_TEST_FREESTANDING
 #undef entry
 #endif
+
+static long fixture_input(const char *name, const char *contents) {
+  long fd = temporary_output(directory_fd, name);
+  check(fd, "sampling fixture output");
+  write_all(fd, contents, length(contents));
+  call4(N_close, fd, 0, 0, 0);
+  fd = openat(directory_fd, name, RDONLY, 0);
+  check(fd, "sampling fixture input");
+  return fd;
+}
+
+static void check_sampling(void) {
+  if (frequency_count)
+    frequencies[0].fd = fixture_input(".frequency", "1001\n");
+  for (u32 step = 0; step < 4; ++step) {
+    mem_fd = fixture_input(
+        ".memory",
+        step == 0
+            ? "MemTotal: 1000 kB\nMemAvailable: 250 kB\nSwapTotal: 500 "
+              "kB\nSwapFree: 125 kB\n"
+            : "MemTotal: 1000 kB\nMemAvailable: 500 kB\nSwapTotal: 500 kB\n");
+    temp_fd =
+        fixture_input(".temperature", step == 0 ? "-12345\n" : "unavailable\n");
+    char line[128] = {0};
+    if (interface_count && step != 2) {
+      unsigned long n = length(networks[0].name);
+      const char *counters = step == 0
+                                 ? ": 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n"
+                                 : ": 3000 0 0 0 0 0 0 0 5000 0 0 0 0 0 0 0\n";
+      memcpy(line, networks[0].name, n);
+      memcpy(line + n, counters, length(counters) + 1);
+    }
+    net_fd = fixture_input(".network", line);
+    /* cpu: 10% stalled; memory: jump beyond the interval caps at 100%;
+     * io: a counter that runs backwards is unavailable. Step 2 removes PSI,
+     * so step 3 needs a fresh baseline. */
+    static const char *const pressure[4][3] = {
+        {"some avg10=0.00 avg60=0.00 avg300=0.00 total=1000\nfull avg10=0.00 "
+         "avg60=0.00 avg300=0.00 total=7\n",
+         "some avg10=0.00 avg60=0.00 avg300=0.00 total=1000\n",
+         "some avg10=0.00 avg60=0.00 avg300=0.00 total=9000\n"},
+        {"some avg10=9.00 avg60=0.00 avg300=0.00 total=101000\nfull avg10=0.00 "
+         "avg60=0.00 avg300=0.00 total=7\n",
+         "some avg10=0.00 avg60=0.00 avg300=0.00 total=9000000\n",
+         "some avg10=0.00 avg60=0.00 avg300=0.00 total=8000\n"},
+        {"", "unavailable\n", "full avg10=0.00 total=1\n"},
+        {"some avg10=0.00 avg60=0.00 avg300=0.00 total=200000\n",
+         "some avg10=0.00 avg60=0.00 avg300=0.00 total=200000\n",
+         "some avg10=0.00 avg60=0.00 avg300=0.00 total=200000\n"}};
+    for (u32 i = 0; i < 3; ++i)
+      pressure_fd[i] = fixture_input(".pressure", pressure[step][i]);
+    last_mono = clock_ns(7) - 1000000000ULL;
+    collect();
+    if (is_valid(pressure_index) != (step == 1) ||
+        (step == 1 && latest.value.small[pressure_index] != 100) ||
+        is_valid(pressure_index + 1) != (step == 1) ||
+        (step == 1 && latest.value.small[pressure_index + 1] != 1000) ||
+        is_valid(pressure_index + 2))
+      fail("PSI stall shares, clamping, regression and missing data");
+    if (!is_valid(memory_index) || memory_kib != 1000 ||
+        latest.value.small[memory_index] != (step == 0 ? 750 : 500))
+      fail("memory sampling and replacement");
+    if (swap_kib != 500 || is_valid(swap_index) != (step == 0) ||
+        (step == 0 && latest.value.small[swap_index] != 750))
+      fail("swap sampling and missing free counter");
+    if (is_valid(temp_index) != (step == 0) ||
+        (step == 0 && latest.value.small[temp_index] != TEMP_BIAS - 123))
+      fail("negative temperature and unavailable replacement");
+    if (frequency_count && (!is_valid(frequency_index) ||
+                            latest.value.small[frequency_index] != 1))
+      fail("frequency rounding");
+    if (interface_count &&
+        (is_valid(small_count) != (step == 1) ||
+         is_valid(small_count + 1) != (step == 1) ||
+         (step == 1 && (!latest.value.net[0] || !latest.value.net[1]))))
+      fail("network baselines, rates, disappearance and return");
+  }
+}
 
 /* Real CPU discovery/parsing and packed ring I/O, with deterministic inputs. */
 int main(int argc, char **argv) {
@@ -19,7 +97,8 @@ int main(int argc, char **argv) {
   mounts_fd = openat(AT_CWD, "/proc/self/mounts", RDONLY, 0);
   check(net_fd, "network discovery input");
   check(mounts_fd, "mount discovery input");
-  initialize_cpus();
+  read_host_name();
+  initialize_topology();
   open_history();
   collect_cpu();
   if (is_valid(overall_index))
@@ -35,6 +114,9 @@ int main(int argc, char **argv) {
   for (u32 i = 0; i < core_count; ++i)
     if (!is_valid(i) || latest.value.small[i] != (i % 2 ? 11 : 900))
       fail("per-core CPU value");
+  if (!is_valid(iowait_index) ||
+      latest.value.small[iowait_index] != percentage(odd * 10, total))
+    fail("aggregate I/O wait");
   cpu_fd = openat(AT_CWD, argv[4], RDONLY, 0);
   check(cpu_fd, "offline CPU fixture");
   memset(latest.valid, 0, (metrics + 7) / 8);
@@ -47,6 +129,13 @@ int main(int argc, char **argv) {
   collect_cpu();
   if (is_valid(core_count - 1) || !is_valid(overall_index))
     fail("returning CPU needs fresh baseline");
+  check_sampling();
+  if (tracked_interface("lo"))
+    fail("default tracking excludes device-less interfaces");
+  interface = "lo";
+  if (!tracked_interface("lo") || tracked_interface("eth0"))
+    fail("--interface selects exactly one interface");
+  interface = 0;
   if (network_pack(8500000000ULL) != (850 | (2 << 10) | (2 << 12)))
     fail("8.50 MB/s encoding");
   if (network_pack(100000000ULL) != (100 | (1 << 12)))
@@ -77,7 +166,5 @@ int main(int argc, char **argv) {
 }
 
 #ifdef QUECTOP_TEST_FREESTANDING
-void entry(long *stack) {
-  finish(main((int)stack[0], (char **)(stack + 1)));
-}
+void entry(long *stack) { finish(main((int)stack[0], (char **)(stack + 1))); }
 #endif

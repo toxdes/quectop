@@ -1,0 +1,150 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["noiseprotocol==0.3.1"]
+# ///
+"""Agent hub-name lookup, hermetic: runs in user, network and mount namespaces
+with a fake /etc/hosts, /etc/resolv.conf and DNS server."""
+import argparse
+from pathlib import Path
+import shlex
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+
+from hub import Hub, ROOT, free_port, wait
+
+# Line 2 overflows the 4 KiB reader; its tail must not be read as an entry.
+HOSTS = ('# comment\n' + '1.1.1.1 ' + 'x' * 4088 + ' 10.9.9.9 from-hosts\n'
+         '127.0.0.1\tlocalhost  from-hosts # trailing comment\n'
+         '127.0.0.1 last-line-no-newline')
+# The first nameserver refuses (nothing listens), so lookups move to the second.
+RESOLV = 'search example.test\nnameserver ::1\nnameserver 127.0.0.3\nnameserver 127.0.0.1\n'
+
+
+class Dns:
+    """A/IN answers via a CNAME and compression pointers; silent for slow.test."""
+
+    def __init__(self, names):
+        self.names, self.queries = names, []
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(('127.0.0.1', 53))
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        while True:
+            query, peer = self.sock.recvfrom(512)
+            end = 12
+            while query[end]:
+                end += query[end] + 1
+            labels, at = [], 12
+            while query[at]:
+                labels.append(query[at + 1:at + 1 + query[at]].decode())
+                at += query[at] + 1
+            name = '.'.join(labels).lower()
+            self.queries.append(name)
+            if name == 'slow.test':
+                continue
+            question = query[12:end + 5]
+            address = self.names.get(name)
+            header = query[:2] + struct.pack('>HHHHH', 0x8180 if address else 0x8183, 1,
+                                             2 if address else 0, 0, 0)
+            answers = b''
+            if address:
+                alias = b'\x04real\xc0\x0c'
+                answers = (struct.pack('>HHHIH', 0xc00c, 5, 1, 60, len(alias)) + alias +
+                           struct.pack('>HHHIH', 0xc00c + 12 + len(question), 1, 1, 60, 4) +
+                           socket.inet_aton(address))
+            self.sock.sendto(header + question + answers, peer)
+
+
+def bind_file(contents, target, directory):
+    path = directory / Path(target).name
+    path.write_text(contents)
+    subprocess.run(['mount', '--bind', str(path), target], check=True)
+
+
+def run_agent(agent_command, directory, hub, target, connects=True):
+    data = directory / ('agent-' + target.replace(':', '-'))
+    agent = subprocess.Popen(agent_command + [
+        '--data-dir', str(data), '--interval-ms', '100', '--publish-ms', '200',
+        '--interface', 'lo', '--hub', target], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        if connects:
+            wait(lambda: hub.alive() and [r for r in hub.hosts() if r[1] == '1'], f'{target} not connected')
+        return agent, data
+    except BaseException:
+        agent.kill()
+        raise
+
+
+def stop(agent, hub):
+    agent.terminate()
+    agent.wait(timeout=5)
+    error = agent.stderr.read()
+    assert not error, error
+    wait(lambda: not [r for r in hub.hosts() if r[1] == '1'], 'disconnect not listed')
+
+
+def inside(agent_command, hub_command):
+    subprocess.run(['ip', 'link', 'set', 'lo', 'up'], check=True)
+    with tempfile.TemporaryDirectory(prefix='quectop-resolve-') as temporary:
+        root = Path(temporary)
+        bind_file(HOSTS, '/etc/hosts', root)
+        bind_file(RESOLV, '/etc/resolv.conf', root)
+        dns = Dns({'hub.example.test': '127.0.0.1'})
+        hub = Hub(hub_command, root / 'hub')
+        hub.start()
+        port = hub.agents
+
+        for target in (f'From-Hosts:{port}', f'last-line-no-newline:{port}'):
+            stop(run_agent(agent_command, root, hub, target)[0], hub)
+        assert not dns.queries, f'/etc/hosts names reached DNS: {dns.queries}'
+
+        agent, _ = run_agent(agent_command, root, hub, f'HUB.Example.Test.:{port}')
+        assert dns.queries == ['hub.example.test'], dns.queries
+        hub.stop()
+        hub.start()
+        wait(lambda: [r for r in hub.hosts() if r[1] == '1'], 'did not reconnect')
+        assert dns.queries.count('hub.example.test') >= 2, 'reconnect did not look the name up again'
+        stop(agent, hub)
+
+        # Failed and unanswered lookups retry with backoff and never stall sampling.
+        for name in ('missing.test', 'slow.test'):
+            agent, data = run_agent(agent_command, root, hub, f'{name}:{port}', connects=False)
+            try:
+                wait(lambda: dns.queries.count(name) >= 2, f'{name} not retried', 20)
+                live = data / 'live.v1.bin'
+                wait(live.exists, 'no snapshot')
+                before = struct.unpack_from('<Q', live.read_bytes(), 24)[0]
+                wait(lambda: struct.unpack_from('<Q', live.read_bytes(), 24)[0] > before, 'sampling stalled')
+                assert not [r for r in hub.hosts() if r[1] == '1']
+            finally:
+                stop(agent, hub)
+        hub.stop()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--agent', default=str(ROOT / 'quectop'), help='agent command')
+    parser.add_argument('--hub', default=str(ROOT / 'quectop-hub'), help='hub command')
+    parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.inside:
+        inside(shlex.split(args.agent), shlex.split(args.hub))
+        return
+    for bad in ('bad name:7070', 'a..b:7070', 'host:0', 'host', ':7070', 'x' * 64 + '.test:1'):
+        result = subprocess.run(shlex.split(args.agent) + ['--hub', bad], capture_output=True, timeout=5)
+        assert result.returncode == 1 and b'--hub needs HOST:PORT' in result.stderr, bad
+    subprocess.run(['unshare', '-rnm', sys.executable, __file__, '--inside',
+                    '--agent', args.agent, '--hub', args.hub], check=True)
+    print('resolve: /etc/hosts (comments, overlong and unterminated lines), DNS via CNAME and '
+          'compression, case and trailing dot, nameserver failover, lookup on every reconnect, '
+          'failed and unanswered lookups without stalled sampling, and invalid names passed')
+
+
+if __name__ == '__main__':
+    main()
