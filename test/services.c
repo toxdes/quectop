@@ -1,5 +1,5 @@
 #ifdef QUECTOP_TEST_FREESTANDING
-#define entry agent_entry
+#define entry probe_entry
 #endif
 #include "../main.c"
 #ifdef QUECTOP_TEST_FREESTANDING

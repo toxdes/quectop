@@ -1,4 +1,4 @@
-/* Data file names and the agent-to-hub stream, shared by quectop and quectop-hub.
+/* Data file names and the probe-to-hub stream, shared by quectop and quectop-hub.
  * Frames: u8 type, u24 little-endian payload length, payload. */
 #define TIERS 5
 #define HEADER_BYTES 64
@@ -13,7 +13,7 @@
 #define DISKS_FILE "disks.v" STRINGIFY(QUECTOP_DISK_SCHEMA_VERSION) ".bin"
 
 /* Wire: every message is a u16 little-endian length, then that many bytes.
- * The agent opens with OPEN in the clear, which is also the Noise prologue, and
+ * The probe opens with OPEN in the clear, which is also the Noise prologue, and
  * Noise message 1, whose payload is u32 publish ms, u8 hostname length,
  * hostname. The hub answers with Noise message 2, payload empty (noise.h).
  * Every later message is one frame sealed with the transport keys. */
@@ -25,13 +25,13 @@
 #define OPEN_MAX (6 + HOST_ID_MAX) /* "QTOP", u8 version, u8 id length, id */
 #define RESUME_BYTES (FRAME_HEADER + 4 * TIERS)
 enum {
-  /* Agent to hub: u8 tier, the ring file's header and metadata. */
+  /* Probe to hub: u8 tier, the ring file's header and metadata. */
   FRAME_RING = 2,
-  /* Hub to agent, after all rings: u32 newest bucket start held per tier. */
+  /* Hub to probe, after all rings: u32 newest bucket start held per tier. */
   FRAME_RESUME = 3,
-  /* Agent to hub: u8 tier, one encoded bucket. */
+  /* Probe to hub: u8 tier, one encoded bucket. */
   FRAME_RECORD = 4,
-  /* Agent to hub: the complete live or disk snapshot file. */
+  /* Probe to hub: the complete live or disk snapshot file. */
   FRAME_LIVE = 5,
   FRAME_DISKS = 6
 };

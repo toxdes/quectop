@@ -3,8 +3,8 @@
 # requires-python = ">=3.11"
 # dependencies = ["noiseprotocol==0.3.1"]
 # ///
-"""Run a real agent against quectop-hub: replication, resume, HTTP, device keys
-and protocol rejection. Hand-written agents and hubs speak Noise through the
+"""Run a real probe against quectop-hub: replication, resume, HTTP, device keys
+and protocol rejection. Hand-written probes and hubs speak Noise through the
 independent noiseprotocol package."""
 
 import argparse
@@ -95,8 +95,8 @@ def opening(identity, version=3):
     return b'QTOP' + bytes([version, len(identity)]) + identity
 
 
-class Agent:
-    """A hand-written agent: OPEN, Noise message 1, then sealed frames."""
+class Probe:
+    """A hand-written probe: OPEN, Noise message 1, then sealed frames."""
 
     def __init__(self, port, identity, name=b'python', publish=1000, key=None, version=3):
         self.sock = socket.create_connection(('127.0.0.1', port))
@@ -159,13 +159,13 @@ class Hub:
         # Never the caller's real ~/.config keys file.
         self.keys = keys or directory.parent / 'no-keys'
         self.command = command + ['--keys', str(self.keys)]
-        self.agents, self.http = free_port(), free_port() if http else None
+        self.probes, self.http = free_port(), free_port() if http else None
         self.process = None
 
     def start(self):
         http = ['--http', f'127.0.0.1:{self.http}'] if self.http else []
         self.process = subprocess.Popen(self.command + [
-            '--data-dir', str(self.directory), '--agents', f'127.0.0.1:{self.agents}', *http, *self.extra],
+            '--data-dir', str(self.directory), '--probes', f'127.0.0.1:{self.probes}', *http, *self.extra],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         wait(lambda: self.alive() and self.listening(), 'hub did not start')
 
@@ -176,7 +176,7 @@ class Hub:
 
     def listening(self):
         try:
-            socket.create_connection(('127.0.0.1', self.agents)).close()
+            socket.create_connection(('127.0.0.1', self.probes)).close()
             return not self.http or get(self.http, '/hosts.txt')[0] == 200
         except OSError:
             return False
@@ -248,12 +248,12 @@ def check_cors(command, directory, identity):
             hub.stop()
 
 
-def check_keys(command, agent_command, root, ring_headers):
+def check_keys(command, probe_command, root, ring_headers):
     """Device keys: --add-device, the Noise handshake, replay, revocation, the
     exposure rule, and key files other users can read."""
     keys = root / 'keys-dir' / 'nested' / 'keys'
     run = lambda *args: subprocess.run(command + ['--keys', str(keys), *args], capture_output=True, timeout=5)
-    exposed = run('--data-dir', str(root / 'keyed'), '--agents', f'0.0.0.0:{free_port()}')
+    exposed = run('--data-dir', str(root / 'keyed'), '--probes', f'0.0.0.0:{free_port()}')
     assert exposed.returncode == 1 and b'needs device keys' in exposed.stderr, exposed.stderr
     added = run('--add-device', 'laptop')
     assert added.returncode == 0, added.stderr
@@ -272,23 +272,23 @@ def check_keys(command, agent_command, root, ring_headers):
     listed = lambda identity: [r for r in hub.hosts() if r[0] == identity and r[1] == '1']
     try:
         def stream(identity, key):
-            agent = Agent(hub.agents, identity, key=key)
-            assert agent.handshake(), identity
+            probe = Probe(hub.probes, identity, key=key)
+            assert probe.handshake(), identity
             for tier, header in enumerate(ring_headers):
-                agent.send(2, bytes([tier]) + header)
-            assert agent.receive()[:4] == bytes([3, 20, 0, 0])
-            return agent
+                probe.send(2, bytes([tier]) + header)
+            assert probe.receive()[:4] == bytes([3, 20, 0, 0])
+            return probe
         good = stream(b'laptop', laptop)
         wait(lambda: listed('laptop'), 'keyed device not accepted')
         with keys.open('a') as file:  # a line with trailing junk lists nothing
             file.write(f'junk {laptop.hex()} extra\n')
         for identity, key in ((b'laptop', phone), (b'laptop', None), (b'tablet', laptop), (b'tablet', None),
                                (b'junk', laptop)):
-            agent = Agent(hub.agents, identity, key=key)
-            assert not agent.handshake() and closed(agent.sock), (identity, key)
+            probe = Probe(hub.probes, identity, key=key)
+            assert not probe.handshake() and closed(probe.sock), (identity, key)
         # Message 1 can be replayed, but the replayer cannot seal a frame and the
         # real device stays connected.
-        replayed = socket.create_connection(('127.0.0.1', hub.agents))
+        replayed = socket.create_connection(('127.0.0.1', hub.probes))
         replayed.sendall(message(good.open) + message(good.first))
         assert read_message(replayed) is not None
         replayed.sendall(message(bytes(40)))
@@ -298,26 +298,26 @@ def check_keys(command, agent_command, root, ring_headers):
         # Lines added or removed while the hub runs apply to the next connection.
         assert run('--add-device', 'tablet').returncode == 0
         keys.write_text(''.join(line + '\n' for line in keys.read_text().splitlines() if not line.startswith('laptop')))
-        assert not Agent(hub.agents, b'laptop', key=laptop).handshake(), 'removed key still accepted'
+        assert not Probe(hub.probes, b'laptop', key=laptop).handshake(), 'removed key still accepted'
         keys.chmod(0o640)  # a keys file others can read authorizes nobody
-        assert not Agent(hub.agents, b'phone', key=phone).handshake(), 'exposed keys file still accepted'
+        assert not Probe(hub.probes, b'phone', key=phone).handshake(), 'exposed keys file still accepted'
         keys.chmod(0o600)
 
         key_file = root / 'device.key'
         key_file.write_text(f'phone {phone.hex()}\n')
         key_file.chmod(0o600)
-        agent = subprocess.Popen(agent_command + [
-            '--data-dir', str(root / 'keyed-agent'), '--interval-ms', '100', '--publish-ms', '200',
-            '--interface', 'lo', '--hub', f'127.0.0.1:{hub.agents}', '--key-file', str(key_file)],
+        probe = subprocess.Popen(probe_command + [
+            '--data-dir', str(root / 'keyed-probe'), '--interval-ms', '100', '--publish-ms', '200',
+            '--interface', 'lo', '--hub', f'127.0.0.1:{hub.probes}', '--key-file', str(key_file)],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
-            wait(lambda: listed('phone'), 'agent with --key-file not accepted')
-            wait(lambda: (hub.directory / 'h' / 'phone' / 'live.v1.bin').exists(), 'keyed agent not streaming')
+            wait(lambda: listed('phone'), 'probe with --key-file not accepted')
+            wait(lambda: (hub.directory / 'h' / 'phone' / 'live.v1.bin').exists(), 'keyed probe not streaming')
         finally:
-            agent.terminate()
-            agent.wait(timeout=5)
-            assert not agent.stderr.read()
-        silent = socket.create_connection(('127.0.0.1', hub.agents))
+            probe.terminate()
+            probe.wait(timeout=5)
+            assert not probe.stderr.read()
+        silent = socket.create_connection(('127.0.0.1', hub.probes))
         started = time.monotonic()
         silent.settimeout(15)
         assert silent.recv(1) == b''
@@ -329,7 +329,7 @@ def check_keys(command, agent_command, root, ring_headers):
     assert 'rejected device laptop' in log and 'rejected device tablet' in log, log
     assert 'keys file is readable by other users' in log, log
     keys.chmod(0o644)
-    started = run('--data-dir', str(root / 'keyed'), '--agents', f'127.0.0.1:{free_port()}')
+    started = run('--data-dir', str(root / 'keyed'), '--probes', f'127.0.0.1:{free_port()}')
     assert started.returncode == 1 and b'readable by other users' in started.stderr, started.stderr
     exposed_key = root / 'exposed.key'
     exposed_key.write_text(key_file.read_text())
@@ -339,7 +339,7 @@ def check_keys(command, agent_command, root, ring_headers):
                            (['--hub', '127.0.0.1:1', '--key-file', str(keys.parent)], b'--key-file'),
                            (['--hub', '127.0.0.1:1', '--key-file', str(exposed_key)], b'readable by other users'),
                            (['--hub', 'https://example.com'], b'not a URL')):
-        result = subprocess.run(agent_command + ['--data-dir', str(root / 'unused')] + args,
+        result = subprocess.run(probe_command + ['--data-dir', str(root / 'unused')] + args,
                                 capture_output=True, timeout=5)
         assert result.returncode == 1 and expected in result.stderr, (args, result.stderr)
 
@@ -369,15 +369,15 @@ def port_open(port):
 
 
 def check_protocol(hub, ring_headers):
-    """A hand-written agent: RESUME semantics, record storage, replacement, rejection."""
+    """A hand-written probe: RESUME semantics, record storage, replacement, rejection."""
     def session():
-        agent = Agent(hub.agents, b'python-agent')
-        assert agent.handshake()
+        probe = Probe(hub.probes, b'python-probe')
+        assert probe.handshake()
         for tier, header in enumerate(ring_headers):
-            agent.send(2, bytes([tier]) + header)
-        reply = agent.receive()
+            probe.send(2, bytes([tier]) + header)
+        reply = probe.receive()
         assert reply[:4] == bytes([3, 20, 0, 0]), reply
-        return agent, struct.unpack_from('<5I', reply, 4)
+        return probe, struct.unpack_from('<5I', reply, 4)
 
     first, held = session()
     assert held == (0,) * 5, held
@@ -387,7 +387,7 @@ def check_protocol(hub, ring_headers):
     record[:4] = struct.pack('<I', start)
     record[-4:] = struct.pack('<I', fnv(record[:-4]))
     first.send(4, b'\x00' + bytes(record))
-    replica = hub.directory / 'h' / 'python-agent' / RINGS[0]
+    replica = hub.directory / 'h' / 'python-probe' / RINGS[0]
     stored = wait(lambda: records(replica.read_bytes()).get(start), 'record not stored')
     assert stored == (header_bytes + start // width % (points - 1) * record_bytes, bytes(record))
     second, held = session()  # replaces the first stream of the same host
@@ -405,45 +405,45 @@ def check_protocol(hub, ring_headers):
     for identity, name, version in ((b'../escape', b'python', 3), (b'.hidden', b'python', 3),
                                     (b'bad\tname', b'x', 3), (b'ok', b'tab\there', 3),
                                     (b'old-version', b'python', 2)):
-        agent = Agent(hub.agents, identity, name=name, version=version)
-        assert not agent.handshake() and closed(agent.sock), identity
+        probe = Probe(hub.probes, identity, name=name, version=version)
+        assert not probe.handshake() and closed(probe.sock), identity
     for raw in (message(b'QTOP\x03'), message(opening(b'short')) + message(bytes(47))):
-        with socket.create_connection(('127.0.0.1', hub.agents)) as sock:
+        with socket.create_connection(('127.0.0.1', hub.probes)) as sock:
             sock.sendall(raw)
             assert closed(sock), raw
     # Refused after it: forged, mislabelled or malformed frames.
     def refused(attack):
-        agent = Agent(hub.agents, b'python-agent')
-        assert agent.handshake()
-        attack(agent)
-        assert closed(agent.sock)
+        probe = Probe(hub.probes, b'python-probe')
+        assert probe.handshake()
+        attack(probe)
+        assert closed(probe.sock)
     refused(lambda a: a.send(4, b'\x00'))
     refused(lambda a: a.send(9, b''))
     refused(lambda a: a.sock.sendall(message(bytes(40))))  # not sealed
     refused(lambda a: a.sock.sendall(message(a.noise.encrypt(b'\x02\x09\x00\x00' + bytes(8)))))  # length lies
-    def reordered(agent):
-        early, late = (agent.noise.encrypt(frame(2, bytes([tier]) + ring_headers[tier])) for tier in (0, 1))
-        agent.sock.sendall(message(late) + message(early))
+    def reordered(probe):
+        early, late = (probe.noise.encrypt(frame(2, bytes([tier]) + ring_headers[tier])) for tier in (0, 1))
+        probe.sock.sendall(message(late) + message(early))
     refused(reordered)
-    def tampered(agent):
-        sealed = bytearray(agent.noise.encrypt(frame(2, bytes([0]) + ring_headers[0])))
+    def tampered(probe):
+        sealed = bytearray(probe.noise.encrypt(frame(2, bytes([0]) + ring_headers[0])))
         sealed[7] ^= 1
-        agent.sock.sendall(message(bytes(sealed)))
+        probe.sock.sendall(message(bytes(sealed)))
     refused(tampered)
     assert not (hub.directory / '..' / 'escape').exists()
-    assert [row[0] for row in hub.hosts()].count('python-agent') == 1
+    assert [row[0] for row in hub.hosts()].count('python-probe') == 1
 
 
-def check_impostor(agent_command, root):
-    """The agent sends nothing past message 1 to a hub without its key, and
+def check_impostor(probe_command, root):
+    """The probe sends nothing past message 1 to a hub without its key, and
     interoperates with a noiseprotocol hub that has it."""
     key = bytes(range(32))
     key_file = root / 'impostor.key'
     key_file.write_text(f'phone {key.hex()}\n')
     key_file.chmod(0o600)
     listener = socket.create_server(('127.0.0.1', 0))
-    agent = subprocess.Popen(agent_command + [
-        '--data-dir', str(root / 'impostor-agent'), '--interval-ms', '100', '--publish-ms', '200',
+    probe = subprocess.Popen(probe_command + [
+        '--data-dir', str(root / 'impostor-probe'), '--interval-ms', '100', '--publish-ms', '200',
         '--interface', 'lo', '--hub', f'127.0.0.1:{listener.getsockname()[1]}', '--key-file', str(key_file)],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
@@ -454,8 +454,8 @@ def check_impostor(agent_command, root):
             opened, first = read_message(sock), read_message(sock)
             assert opened == opening(b'phone') and len(first) >= 48, (opened, first)
             sock.sendall(message(bytes(range(48))))  # a hub that cannot prove the key
-            assert read_exact(sock, 1) == b'', 'agent sent data to an impostor'
-        sock, _ = listener.accept()  # the agent retries; this hub holds the key
+            assert read_exact(sock, 1) == b'', 'probe sent data to an impostor'
+        sock, _ = listener.accept()  # the probe retries; this hub holds the key
         with sock:
             sock.settimeout(5)
             hub = NoiseConnection.from_name(NOISE)
@@ -471,35 +471,35 @@ def check_impostor(agent_command, root):
                 ring = hub.decrypt(read_message(sock))
                 assert ring[0] == 2 and ring[4] == tier and ring[5:13] == b'QUECTOPH', ring[:13]
     finally:
-        agent.terminate()
-        agent.wait(timeout=5)
+        probe.terminate()
+        probe.wait(timeout=5)
         listener.close()
-    assert not agent.stderr.read()
+    assert not probe.stderr.read()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--agent', default=str(ROOT / 'quectop'), help='agent command')
+    parser.add_argument('--probe', default=str(ROOT / 'quectop'), help='probe command')
     parser.add_argument('--hub', default=str(ROOT / 'quectop-hub'), help='hub command')
     args = parser.parse_args()
-    agent_command, hub_command = shlex.split(args.agent), shlex.split(args.hub)
+    probe_command, hub_command = shlex.split(args.probe), shlex.split(args.hub)
     with tempfile.TemporaryDirectory(prefix='quectop-hub-') as temporary:
         root = Path(temporary)
         hub = Hub(hub_command, root / 'hub')
         hub.start()
-        conflict = subprocess.run(hub.command + ['--data-dir', str(hub.directory), '--agents',
+        conflict = subprocess.run(hub.command + ['--data-dir', str(hub.directory), '--probes',
                                                  f'127.0.0.1:{free_port()}', '--http', f'127.0.0.1:{free_port()}'],
                                   capture_output=True, timeout=5)
         assert conflict.returncode == 1 and b'quectop-hub: another quectop-hub owns' in conflict.stderr
-        bad = subprocess.run(agent_command + ['--hub', 'bad name:7070'], capture_output=True, timeout=5)
+        bad = subprocess.run(probe_command + ['--hub', 'bad name:7070'], capture_output=True, timeout=5)
         assert bad.returncode == 1 and b'--hub needs HOST:PORT' in bad.stderr
-        agent_data = root / 'agent'
-        agent = subprocess.Popen(agent_command + [
-            '--data-dir', str(agent_data), '--interval-ms', '100', '--publish-ms', '200',
-            '--interface', 'lo', '--hub', f'127.0.0.1:{hub.agents}'],
+        probe_data = root / 'probe'
+        probe = subprocess.Popen(probe_command + [
+            '--data-dir', str(probe_data), '--interval-ms', '100', '--publish-ms', '200',
+            '--interface', 'lo', '--hub', f'127.0.0.1:{hub.probes}'],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         try:
-            rows = wait(lambda: hub.alive() and [r for r in hub.hosts() if r[1] == '1'], 'agent not connected')
+            rows = wait(lambda: hub.alive() and [r for r in hub.hosts() if r[1] == '1'], 'probe not connected')
             identity, _, name = rows[0]
             assert name == socket.gethostname()
             replica = hub.directory / 'h' / identity
@@ -517,26 +517,26 @@ def main():
             hub.stop()
             ring = (replica / RINGS[0]).read_bytes()
             width, newest_before = ring_geometry(ring)[1], max(records(ring))
-            latest = lambda: struct.unpack_from('<I', (agent_data / 'live.v1.bin').read_bytes(), 48)[0]
-            wait(lambda: latest() >= newest_before + 3 * width, 'agent stopped sampling', 30)
+            latest = lambda: struct.unpack_from('<I', (probe_data / 'live.v1.bin').read_bytes(), 48)[0]
+            wait(lambda: latest() >= newest_before + 3 * width, 'probe stopped sampling', 30)
             hub.start()
-            wait(lambda: [r for r in hub.hosts() if r[0] == identity and r[1] == '1'], 'agent did not reconnect')
+            wait(lambda: [r for r in hub.hosts() if r[0] == identity and r[1] == '1'], 'probe did not reconnect')
             wait(lambda: max(records((replica / RINGS[0]).read_bytes())) >= newest_before + 4 * width,
                  'stream did not continue after reconnecting')
-            # The agent samples continuously, so every bucket exists: no gap while the hub was down.
+            # The probe samples continuously, so every bucket exists: no gap while the hub was down.
             held = records((replica / RINGS[0]).read_bytes())
             assert all(start in held for start in range(newest_before, max(held) + 1, width)), 'backfill gap'
 
         finally:
-            agent.terminate()
-            agent.wait(timeout=5)
-            error = agent.stderr.read()
+            probe.terminate()
+            probe.wait(timeout=5)
+            error = probe.stderr.read()
             assert not error, error
         wait(lambda: [r for r in hub.hosts() if r[0] == identity and r[1] == '0'], 'disconnect not listed')
-        local_live = (agent_data / 'live.v1.bin').read_bytes()
+        local_live = (probe_data / 'live.v1.bin').read_bytes()
         pending_count = struct.unpack_from('<I', local_live, 104)[0]
         for index, ring in enumerate(RINGS):
-            local, remote = (agent_data / ring).read_bytes(), (replica / ring).read_bytes()
+            local, remote = (probe_data / ring).read_bytes(), (replica / ring).read_bytes()
             points, width, record_bytes, header_bytes = ring_geometry(local)
             assert remote[:header_bytes] == local[:header_bytes] and len(remote) == len(local), ring
             mine, theirs = records(local), records(remote)
@@ -545,7 +545,7 @@ def main():
             assert len(set(theirs) - set(mine)) <= unflushed + 1, (ring, len(set(theirs) - set(mine)))
             for start in theirs:  # replicas never invent buckets
                 assert start % width == 0
-        ring_headers = [(agent_data / ring).read_bytes()[:ring_geometry((agent_data / ring).read_bytes())[3]]
+        ring_headers = [(probe_data / ring).read_bytes()[:ring_geometry((probe_data / ring).read_bytes())[3]]
                         for ring in RINGS]
         check_protocol(hub, ring_headers)
         hub.alive()
@@ -557,8 +557,8 @@ def main():
         check_static_server(hub.directory, identity)
         restarted.stop()
         check_cors(hub_command, hub.directory, identity)
-        check_keys(hub_command, agent_command, root, ring_headers)
-        check_impostor(agent_command, root)
+        check_keys(hub_command, probe_command, root, ring_headers)
+        check_impostor(probe_command, root)
     print('hub: replication, snapshots, resume after hub restart, built-in static serving and path '
           'rejection, --cors, device keys and Noise handshake (replay, impostor hub, noiseprotocol interop), '
           'DATA served by another static server, stream replacement and protocol rejection passed')

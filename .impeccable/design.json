@@ -91,7 +91,7 @@
   ],
   "narrative": {
     "northStar": "Technical dashboard",
-    "overview": "The supplied screenshot establishes a compact measurement surface: a pale background, near-white panels, monospaced values and restrained chart colors. Six compact summaries and a full-width filesystem capacity list sit above six history charts. Density serves comparison and reading measurements.\n\nThe source also provides a dark theme with the same hierarchy and geometry. System fonts, native controls and canvas plots keep the interface independent of external fonts, images and libraries. There are no decorative animations. All UI text, including canvas axes and tooltips, uses a minimum 14px font as requested by the user.",
+    "overview": "The design is a compact measurement surface: a pale background, near-white panels, monospaced values and restrained chart colors. Six compact summaries and a full-width filesystem capacity list sit above six history charts. Density serves comparison and reading measurements.\n\nThe source also provides a dark theme with the same hierarchy and geometry. System fonts, native controls and canvas plots keep the interface independent of external fonts, images and libraries. There are no decorative animations. All UI text, including canvas axes and tooltips, uses a minimum 14px font as requested by the user.",
     "keyCharacteristics": [
       "Compact monospaced measurements with tabular numerals.",
       "Flat panels with quiet tonal separation.",

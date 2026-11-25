@@ -1,6 +1,6 @@
 # quectop-hub reference
 
-`quectop-hub` receives agent streams and keeps its data directory as a static website. The site holds the dashboard, a host index, and a copy of each host's files. Any static web server can serve the directory, or the hub can serve it with `--http`.
+`quectop-hub` receives probe streams and keeps its data directory as a static website. The site holds the dashboard, a host index, and a copy of each host's files. Any static web server can serve the directory, or the hub can serve it with `--http`.
 
 ## Synopsis
 
@@ -13,7 +13,7 @@ quectop-hub --add-device NAME [--keys FILE]
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--agents IPV4:PORT` | `127.0.0.1:7070` | Address for agent streams. |
+| `--probes IPV4:PORT` | `127.0.0.1:7070` | Address for probe streams. |
 | `--http IPV4:PORT` | off | Also serve the data directory over HTTP. See [Built-in HTTP server](#built-in-http-server). |
 | `--cors ORIGIN` | off | Send `Access-Control-Allow-Origin: ORIGIN` on `--http` responses. `ORIGIN` is one origin, such as `https://example.com`, or `*`. Requires `--http`. |
 | `--keys FILE` | `$HOME/.config/quectop-hub/keys` | Device keys file. See [Keys file](#keys-file). |
@@ -26,7 +26,7 @@ quectop-hub --add-device NAME [--keys FILE]
 
 - An option is unknown or has a bad value.
 - Another hub holds the lock on the data directory.
-- `--agents` is outside `127.0.0.0/8` and the keys file does not exist.
+- `--probes` is outside `127.0.0.0/8` and the keys file does not exist.
 - Other users can read the keys file.
 
 ## Keys file
@@ -56,8 +56,8 @@ The hub reads the file again on every new connection. An added line works for th
 | Keys file | Who may connect |
 | --- | --- |
 | Exists | Only listed devices, with their keys. |
-| Missing, `--agents` on `127.0.0.0/8` | Any agent that uses the all-zero key. The stream is encrypted, but not authenticated. |
-| Missing, `--agents` elsewhere | The hub does not start. |
+| Missing, `--probes` on `127.0.0.0/8` | Any probe that uses the all-zero key. The stream is encrypted, but not authenticated. |
+| Missing, `--probes` elsewhere | The hub does not start. |
 
 The hub refuses a keys file that other users can read. Fix it with `chmod 600 FILE`. Rejected devices are logged to stderr.
 
@@ -76,7 +76,7 @@ The data directory is the web root.
 
 - The hub replaces snapshots and `hosts.txt` atomically.
 - It writes history buckets in place, and the dashboard checks each bucket's checksum.
-- At startup, `hosts.txt` lists hosts from earlier runs as offline until their agents connect again.
+- At startup, `hosts.txt` lists hosts from earlier runs as offline until their probes connect again.
 
 **Asset revision.** The revision is the first 16 hex characters of a SHA-256 hash. The hash covers each asset's name, its byte length (little-endian), and its bytes, in the order CSS, JavaScript, HTML. It detects changed assets and is not a signature.
 
@@ -121,7 +121,7 @@ Connection: close
 | Resource | Limit |
 | --- | --- |
 | Hosts | 64 |
-| Agent connections at once | 64 |
+| Probe connections at once | 64 |
 | HTTP connections at once | 32 |
 | Time from connect to the first decrypted frame | 10 s |
 | History ring file | 256 MiB |

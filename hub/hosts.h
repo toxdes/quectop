@@ -5,10 +5,10 @@
 #define HOST_NAME_MAX 64
 #define HOSTS_TEXT_MAX (MAX_HOSTS * (HOST_ID_MAX + 3 + HOST_NAME_MAX + 1))
 
-struct agent;
+struct probe;
 struct host {
   long dir;
-  struct agent *agent; /* connected stream, if any */
+  struct probe *probe; /* connected stream, if any */
   char id[HOST_ID_MAX + 1];
   char name[HOST_NAME_MAX];
   u8 id_bytes, name_bytes;
@@ -73,7 +73,7 @@ static void write_hosts(void) {
     memcpy(p, h->id, h->id_bytes);
     p += h->id_bytes;
     *p++ = '\t';
-    *p++ = h->agent ? '1' : '0';
+    *p++ = h->probe ? '1' : '0';
     *p++ = '\t';
     memcpy(p, h->name, h->name_bytes);
     p += h->name_bytes;

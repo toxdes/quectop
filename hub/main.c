@@ -1,4 +1,4 @@
-/* quectop-hub: receives agent streams and keeps DATA a static site: the
+/* quectop-hub: receives probe streams and keeps DATA a static site: the
  * dashboard, hosts.txt and each host's replica files. Any static server can
  * serve DATA; --http adds a built-in one. Single-threaded, nonblocking. */
 #include "../linux.h"
@@ -78,14 +78,14 @@ static long listen_on(const char *spec, const char *what, struct endpoint *at) {
 static void help(void) {
   static const char s[] =
       "quectop-hub " QUECTOP_VERSION
-      ": receives quectop agents, no libc\n"
+      ": receives quectop probes, no libc\n"
       "Usage: quectop-hub [options]\n"
-      "  --agents IPV4:PORT  agent stream address (default 127.0.0.1:7070)\n"
+      "  --probes IPV4:PORT  probe stream address (default 127.0.0.1:7070)\n"
       "  --http IPV4:PORT    also serve the data directory (default off)\n"
       "  --cors ORIGIN       let ORIGIN (or *) read --http responses\n"
       "  --keys FILE         device keys (default "
       "$HOME/.config/quectop-hub/keys);\n"
-      "                      required when --agents is not on 127.0.0.1\n"
+      "                      required when --probes is not on 127.0.0.1\n"
       "  --add-device NAME   add a key for NAME to the keys file, print it, "
       "exit\n"
       "  --data-dir DIR      created if missing (default "
@@ -102,7 +102,7 @@ void entry(long *stack) __attribute__((noreturn));
 void entry(long *stack) {
   int argc = (int)stack[0];
   char **argv = (char **)(stack + 1);
-  const char *agents_spec = "127.0.0.1:7070", *http_spec = 0, *directory = 0,
+  const char *probes_spec = "127.0.0.1:7070", *http_spec = 0, *directory = 0,
              *keys = 0, *new_device = 0;
   for (int i = 1; i < argc; ++i) {
     const char *arg = argv[i];
@@ -117,8 +117,8 @@ void entry(long *stack) {
     }
     if (++i == argc)
       fail("option requires a value; see --help");
-    if (equal(arg, "--agents"))
-      agents_spec = argv[i];
+    if (equal(arg, "--probes"))
+      probes_spec = argv[i];
     else if (equal(arg, "--http"))
       http_spec = argv[i];
     else if (equal(arg, "--cors"))
@@ -144,12 +144,12 @@ void entry(long *stack) {
         "another quectop-hub owns this data directory");
   install_assets();
   load_hosts();
-  struct endpoint agents_at;
-  long agent_listener = listen_on(agents_spec, "--agents needs IPV4:PORT", &agents_at);
-  keys_required = agents_at.address[0] != 127;
+  struct endpoint probes_at;
+  long probe_listener = listen_on(probes_spec, "--probes needs IPV4:PORT", &probes_at);
+  keys_required = probes_at.address[0] != 127;
   long keys_fd = openat(AT_CWD, keys_path, RDONLY, 0);
   if (keys_fd < 0 && keys_required)
-    fail("--agents beyond 127.0.0.1 needs device keys; add one with "
+    fail("--probes beyond 127.0.0.1 needs device keys; add one with "
          "--add-device NAME");
   if (keys_fd >= 0 && !private_file(keys_fd))
     fail("keys file is readable by other users; run chmod 600 on it");
@@ -157,27 +157,27 @@ void entry(long *stack) {
     call4(N_close, keys_fd, 0, 0, 0);
   long http_listener =
       http_spec ? listen_on(http_spec, "--http needs IPV4:PORT", 0) : -1;
-  for (u32 i = 0; i < MAX_AGENTS; ++i)
-    agents[i].fd = -1;
+  for (u32 i = 0; i < MAX_PROBES; ++i)
+    probes[i].fd = -1;
   for (u32 i = 0; i < MAX_CLIENTS; ++i) {
     clients[i].fd = clients[i].file = -1;
     clients[i].buffer = client_buffers[i];
   }
 
-  struct poll_entry entries[2 + MAX_AGENTS + MAX_CLIENTS];
-  void *owners[2 + MAX_AGENTS + MAX_CLIENTS];
+  struct poll_entry entries[2 + MAX_PROBES + MAX_CLIENTS];
+  void *owners[2 + MAX_PROBES + MAX_CLIENTS];
   for (;;) {
     u64 now = clock_ns(1), deadline = now + 3600000000000ULL;
     u32 count = 2;
-    entries[0] = (struct poll_entry){(int)agent_listener, POLL_IN, 0};
+    entries[0] = (struct poll_entry){(int)probe_listener, POLL_IN, 0};
     entries[1] = (struct poll_entry){(int)http_listener, POLL_IN, 0}; /* -1: ignored */
-    for (u32 i = 0; i < MAX_AGENTS; ++i) {
-      struct agent *a = &agents[i];
+    for (u32 i = 0; i < MAX_PROBES; ++i) {
+      struct probe *a = &probes[i];
       if (a->fd < 0)
         continue;
       u64 expires = a->last_ns + (u64)a->timeout_ms * 1000000;
       if (now >= expires) {
-        close_agent(a);
+        close_probe(a);
         continue;
       }
       if (expires < deadline)
@@ -202,18 +202,18 @@ void entry(long *stack) {
     if (wait_events(entries, count, deadline) <= 0)
       continue;
     if (entries[0].revents)
-      accept_agent(agent_listener);
+      accept_probe(probe_listener);
     if (http_listener >= 0 && entries[1].revents)
       accept_client(http_listener);
     for (u32 i = 2; i < count; ++i) {
       short revents = entries[i].revents;
       if (!revents)
         continue;
-      if (owners[i] >= (void *)agents && owners[i] < (void *)(agents + MAX_AGENTS)) {
-        struct agent *a = owners[i];
+      if (owners[i] >= (void *)probes && owners[i] < (void *)(probes + MAX_PROBES)) {
+        struct probe *a = owners[i];
         /* An earlier stream in this pass may have replaced this one. */
         if (a->fd == entries[i].fd)
-          read_agent(a);
+          read_probe(a);
       } else {
         struct client *c = owners[i];
         if (revents & POLL_FAILED)

@@ -8,7 +8,7 @@ static void help(void) {
 #else
       "ARM64/x86-64"
 #endif
-      " agent, no libc\nUsage: quectop "
+      " probe, no libc\nUsage: quectop "
       "[options]\n"
       "  --live-dir DIR   live file directory; prefer RAM storage (default "
       "output)\n"

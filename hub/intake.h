@@ -1,10 +1,10 @@
-/* Agent streams (protocol.h). A device counts as connected once its first
+/* Probe streams (protocol.h). A device counts as connected once its first
  * sealed frame opens, since Noise message 1 alone can be replayed. Each frame
  * is validated before it touches the host's replica; any violation closes the
  * stream. */
-#define MAX_AGENTS 64
-#define AGENT_BUFFER (MESSAGE_HEADER + NOISE_MESSAGE_MAX)
-#define AGENT_MAPPING (sizeof(struct greeting) + AGENT_BUFFER)
+#define MAX_PROBES 64
+#define PROBE_BUFFER (MESSAGE_HEADER + NOISE_MESSAGE_MAX)
+#define PROBE_MAPPING (sizeof(struct greeting) + PROBE_BUFFER)
 #define RING_MAX_BYTES (256u << 20)
 #define HELLO_TIMEOUT_MS 10000 /* frees slots held by unproven connections */
 
@@ -19,11 +19,11 @@ struct greeting {
   u8 id_bytes, name_bytes;
   char id[HOST_ID_MAX], name[HOST_NAME_MAX];
 };
-struct agent {
+struct probe {
   long fd;
   struct host *host;
-  struct greeting *greeting; /* AGENT_MAPPING bytes, mapped while connected */
-  u8 *buffer;                /* AGENT_BUFFER bytes after the greeting */
+  struct greeting *greeting; /* PROBE_MAPPING bytes, mapped while connected */
+  u8 *buffer;                /* PROBE_BUFFER bytes after the greeting */
   u32 have, timeout_ms;
   u8 rings; /* tiers whose RING arrived */
   u8 phase; /* PHASE_* */
@@ -32,34 +32,34 @@ struct agent {
   struct ring ring[TIERS];
 };
 enum { PHASE_OPEN, PHASE_HANDSHAKE, PHASE_SEALED };
-static struct agent agents[MAX_AGENTS];
+static struct probe probes[MAX_PROBES];
 static u8 scan[65536];
 
-static void close_agent(struct agent *a) {
+static void close_probe(struct probe *a) {
   call4(N_close, a->fd, 0, 0, 0);
   for (u32 i = 0; i < TIERS; ++i)
     if (a->rings >> i & 1)
       call4(N_close, a->ring[i].fd, 0, 0, 0);
   crypto_wipe(a->greeting, sizeof(*a->greeting));
-  call4(N_unmap, (long)a->greeting, AGENT_MAPPING, 0, 0);
-  int listed = a->host && a->host->agent == a;
+  call4(N_unmap, (long)a->greeting, PROBE_MAPPING, 0, 0);
+  int listed = a->host && a->host->probe == a;
   if (listed)
-    a->host->agent = 0;
+    a->host->probe = 0;
   crypto_wipe(a, sizeof(*a));
   a->fd = -1;
   if (listed)
     write_hosts();
 }
-static void accept_agent(long listener) {
+static void accept_probe(long listener) {
   long fd = call4(N_accept, listener, 0, 0, 0x80800); /* NONBLOCK|CLOEXEC */
   if (fd < 0)
     return;
-  for (u32 i = 0; i < MAX_AGENTS; ++i)
-    if (agents[i].fd < 0) {
-      long mapped = call6(N_mmap, 0, AGENT_MAPPING, 3, 0x22, -1, 0);
+  for (u32 i = 0; i < MAX_PROBES; ++i)
+    if (probes[i].fd < 0) {
+      long mapped = call6(N_mmap, 0, PROBE_MAPPING, 3, 0x22, -1, 0);
       if ((unsigned long)mapped >= (unsigned long)-4095)
         break;
-      struct agent *a = &agents[i];
+      struct probe *a = &probes[i];
       a->fd = fd;
       a->greeting = (struct greeting *)mapped;
       a->buffer = (u8 *)(a->greeting + 1);
@@ -80,7 +80,7 @@ static void log_rejected(const char *id, u32 id_bytes) {
   write_all(2, line, sizeof(head) + sizeof(tail) - 2 + id_bytes);
 }
 /* OPEN: "QTOP", version, id; the id picks the key for the handshake. */
-static int on_open(struct agent *a, const u8 *p, u32 bytes) {
+static int on_open(struct probe *a, const u8 *p, u32 bytes) {
   struct greeting *g = a->greeting;
   u32 id_bytes = bytes > 5 ? p[5] : 0;
   u8 key[KEY_BYTES];
@@ -99,7 +99,7 @@ static int on_open(struct agent *a, const u8 *p, u32 bytes) {
   return 1;
 }
 /* Noise message 1, then message 2 back; a wrong key fails here. */
-static int on_handshake(struct agent *a, u8 *p, u32 bytes) {
+static int on_handshake(struct probe *a, u8 *p, u32 bytes) {
   struct greeting *g = a->greeting;
   long got = noise_read(&g->handshake, p, bytes);
   const u8 *payload = p + NOISE_KEY;
@@ -129,14 +129,14 @@ static int on_handshake(struct agent *a, u8 *p, u32 bytes) {
          sizeof(reply);
 }
 /* The first frame that opens proves the device holds the transport keys. */
-static int attach_host(struct agent *a) {
+static int attach_host(struct probe *a) {
   const struct greeting *g = a->greeting;
   struct host *h = find_host(g->id, g->id_bytes);
   if (!h && !(h = add_host(g->id, g->id_bytes)))
     return 0;
-  if (h->agent) /* a reconnect can arrive before the old stream times out */
-    close_agent(h->agent);
-  h->agent = a;
+  if (h->probe) /* a reconnect can arrive before the old stream times out */
+    close_probe(h->probe);
+  h->probe = a;
   a->host = h;
   a->timeout_ms = 3 * (g->publish_ms < 3600000 ? g->publish_ms : 3600000) + 60000;
   memcpy(h->name, g->name, g->name_bytes);
@@ -163,7 +163,7 @@ static u32 newest_bucket(const struct ring *r) {
   return newest;
 }
 /* Keeps a matching replica ring, otherwise recreates it from the header. */
-static int on_ring(struct agent *a, const u8 *p, u32 bytes) {
+static int on_ring(struct probe *a, const u8 *p, u32 bytes) {
   u32 tier = bytes ? p[0] : TIERS;
   const u8 *h = p + 1;
   u32 header_bytes = bytes - 1;
@@ -215,7 +215,7 @@ static int on_ring(struct agent *a, const u8 *p, u32 bytes) {
   return call6(N_send, a->fd, (long)reply, sizeof(reply), SEND_FLAGS, 0, 0) ==
          sizeof(reply);
 }
-static int on_record(struct agent *a, const u8 *p, u32 bytes) {
+static int on_record(struct probe *a, const u8 *p, u32 bytes) {
   u32 tier = bytes ? p[0] : TIERS;
   if (a->rings != (1 << TIERS) - 1 || tier >= TIERS)
     return 0;
@@ -230,7 +230,7 @@ static int on_record(struct agent *a, const u8 *p, u32 bytes) {
              r->header_bytes + (u64)slot * r->record_bytes, 1);
   return 1;
 }
-static int on_snapshot(struct agent *a, u8 type, const u8 *p, u32 bytes) {
+static int on_snapshot(struct probe *a, u8 type, const u8 *p, u32 bytes) {
   int live = type == FRAME_LIVE;
   if (a->rings != (1 << TIERS) - 1 || bytes < (live ? LIVE_HEADER_BYTES : 28) + 4 ||
       !prefix((const char *)p, live ? "QUECTOPL" : "QUECTOPD") ||
@@ -243,7 +243,7 @@ static int on_snapshot(struct agent *a, u8 type, const u8 *p, u32 bytes) {
     replace_file(a->host->dir, "." DISKS_FILE ".tmp", DISKS_FILE, p, bytes);
   return 1;
 }
-static int on_frame(struct agent *a, u8 type, const u8 *p, u32 bytes) {
+static int on_frame(struct probe *a, u8 type, const u8 *p, u32 bytes) {
   switch (type) {
   case FRAME_RING:
     return on_ring(a, p, bytes);
@@ -256,7 +256,7 @@ static int on_frame(struct agent *a, u8 type, const u8 *p, u32 bytes) {
     return 0;
   }
 }
-static int on_message(struct agent *a, u8 *m, u32 bytes) {
+static int on_message(struct probe *a, u8 *m, u32 bytes) {
   if (a->phase == PHASE_OPEN)
     return on_open(a, m, bytes);
   if (a->phase == PHASE_HANDSHAKE)
@@ -268,13 +268,13 @@ static int on_message(struct agent *a, u8 *m, u32 bytes) {
          (a->host || attach_host(a)) &&
          on_frame(a, m[0], m + FRAME_HEADER, frame - FRAME_HEADER);
 }
-static void read_agent(struct agent *a) {
+static void read_probe(struct probe *a) {
   long n = call4(N_read, a->fd, (long)(a->buffer + a->have),
-                 AGENT_BUFFER - a->have, 0);
+                 PROBE_BUFFER - a->have, 0);
   if (n == -4 || n == -11)
     return;
   if (n <= 0) {
-    close_agent(a);
+    close_probe(a);
     return;
   }
   a->have += (u32)n;
@@ -286,7 +286,7 @@ static void read_agent(struct agent *a) {
     if (a->have - at < MESSAGE_HEADER + bytes)
       break;
     if (!on_message(a, m, bytes)) {
-      close_agent(a);
+      close_probe(a);
       return;
     }
     at += MESSAGE_HEADER + bytes;

@@ -23,7 +23,7 @@ function reader(d,at) {
     return value;
   };
 }
-/* Metric order matches the agent; metrics from memory to network keep bucket minimums. */
+/* Metric order matches the probe; metrics from memory to network keep bucket minimums. */
 function layout(cores,frequencies,frequencyBits,interfaces) {
   const c=cores,temp=c+9,frequency=c+10,network=frequency+frequencies;
   const bits=Array(temp).fill(10).concat(12,Array(frequencies).fill(frequencyBits),Array(interfaces*2).fill(14));

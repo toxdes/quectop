@@ -1,8 +1,8 @@
 # Hub protocol reference (v3)
 
-The agent streams to the hub over one TCP connection. All integers are little-endian. `protocol.h` defines the constants, `noise.h` the handshake, `uplink.h` the agent side, and `hub/intake.h` the hub side.
+The probe streams to the hub over one TCP connection. All integers are little-endian. `protocol.h` defines the constants, `noise.h` the handshake, `uplink.h` the probe side, and `hub/intake.h` the hub side.
 
-Agents and hubs that use different protocol versions cannot connect. Upgrade them together.
+Probes and hubs that use different protocol versions cannot connect. Upgrade them together.
 
 ## Messages
 
@@ -10,7 +10,7 @@ Every message is a `u16` length, then that many bytes. The largest message is 65
 
 ## Connection sequence
 
-1. **OPEN**, agent to hub, unencrypted:
+1. **OPEN**, probe to hub, unencrypted:
 
 	| Bytes | Field |
 	| --- | --- |
@@ -21,15 +21,15 @@ Every message is a `u16` length, then that many bytes. The largest message is 65
 
 	The OPEN message is also the Noise prologue. A change to any byte makes the handshake fail.
 
-2. **Noise message 1** (`psk, e`), agent to hub. Its encrypted payload is:
+2. **Noise message 1** (`psk, e`), probe to hub. Its encrypted payload is:
 
 	| Bytes | Field |
 	| --- | --- |
-	| 4 | Agent `--publish-ms` |
+	| 4 | Probe `--publish-ms` |
 	| 1 | Host name length, 0–64 |
 	| n | Host name |
 
-3. **Noise message 2** (`e, ee`), hub to agent, with an empty payload. It is 48 bytes. If the agent cannot decrypt the message, it disconnects and sends nothing else.
+3. **Noise message 2** (`e, ee`), hub to probe, with an empty payload. It is 48 bytes. If the probe cannot decrypt the message, it disconnects and sends nothing else.
 
 4. **Frames.** Every later message is one frame, sealed with the transport keys from the handshake. Each sealed frame ends with a 16-byte tag.
 
@@ -57,11 +57,11 @@ A frame is a `u8` type, a `u24` payload length, and the payload. A frame is at m
 
 | Type | Name | Direction | Payload |
 | ---: | --- | --- | --- |
-| 2 | RING | agent to hub | `u8` tier (0–4), then the ring file's 64-byte header and device metadata. Sent once for each tier. |
-| 3 | RESUME | hub to agent | Five `u32` values: for each tier, the start of the newest valid bucket the hub holds, or `0` for none. |
-| 4 | RECORD | agent to hub | `u8` tier, then one bucket, byte for byte as the ring file stores it. |
-| 5 | LIVE | agent to hub | A complete `live.v1.bin`. |
-| 6 | DISKS | agent to hub | A complete `disks.v1.bin`. |
+| 2 | RING | probe to hub | `u8` tier (0–4), then the ring file's 64-byte header and device metadata. Sent once for each tier. |
+| 3 | RESUME | hub to probe | Five `u32` values: for each tier, the start of the newest valid bucket the hub holds, or `0` for none. |
+| 4 | RECORD | probe to hub | `u8` tier, then one bucket, byte for byte as the ring file stores it. |
+| 5 | LIVE | probe to hub | A complete `live.v1.bin`. |
+| 6 | DISKS | probe to hub | A complete `disks.v1.bin`. |
 
 Tiers 0–4 are `1h`, `1d`, `7d`, `30d`, and `90d`.
 
@@ -69,14 +69,14 @@ Tiers 0–4 are `1h`, `1d`, `7d`, `30d`, and `90d`.
 
 After the handshake, the two sides do these steps:
 
-1. The agent sends five RING frames.
+1. The probe sends five RING frames.
 2. The hub keeps each replica ring whose header matches. It recreates the others.
 3. The hub sends RESUME.
-4. For each tier, the agent sends the buckets after the hub's newest, oldest first. It reads them from its ring files. Buckets not yet flushed come from memory.
-5. The agent sends the latest LIVE and DISKS snapshots.
-6. The agent sends each new bucket and snapshot when it writes them.
+4. For each tier, the probe sends the buckets after the hub's newest, oldest first. It reads them from its ring files. Buckets not yet flushed come from memory.
+5. The probe sends the latest LIVE and DISKS snapshots.
+6. The probe sends each new bucket and snapshot when it writes them.
 
-While a tier is still sending old buckets, the agent does not send that tier's new buckets directly. The catch-up reaches them later, so the hub's newest bucket never runs ahead of a gap.
+While a tier is still sending old buckets, the probe does not send that tier's new buckets directly. The catch-up reaches them later, so the hub's newest bucket never runs ahead of a gap.
 
 ## Validation
 
@@ -97,4 +97,4 @@ While a tier is still sending old buckets, the agent does not send that tier's n
 - The [cacophony](https://github.com/haskell-cryptography/cacophony) test vector for `Noise_NNpsk0_25519_ChaChaPoly_SHA512`.
 - Random sessions against the [`noiseprotocol`](https://pypi.org/project/noiseprotocol/) Python package, including tampered messages and wrong keys.
 
-`test/hub.py` runs a real agent against a Python hub, and a Python agent against the real hub.
+`test/hub.py` runs a real probe against a Python hub, and a Python probe against the real hub.

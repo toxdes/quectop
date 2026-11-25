@@ -35,15 +35,15 @@ def bus_string(value: bytes) -> bytes:
 
 
 def check_systemd(command: list[str], root: Path, truncated: int = 0) -> None:
-    peer, agent = socket.socketpair()
-    with peer, agent:
+    peer, probe = socket.socketpair()
+    with peer, probe:
         peer.settimeout(5)
-        agent.setblocking(False)
+        probe.setblocking(False)
         process = subprocess.Popen(
-            command + [str(root), str(agent.fileno()), "truncated" if truncated else "valid"],
-            pass_fds=(agent.fileno(),), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            command + [str(root), str(probe.fileno()), "truncated" if truncated else "valid"],
+            pass_fds=(probe.fileno(),), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
-        agent.close()
+        probe.close()
         try:
             bodies = [bus_string(b"/unit"), b"\x01s\0\0" + bus_string(b"inactive"),
                       b"\x01t\0" + b"\0" * 5 + struct.pack("<Q", 987654),

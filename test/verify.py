@@ -72,7 +72,7 @@ def wait_live(process, path, minimum_generated_ms=0):
                 if struct.unpack_from('<Q', data, 24)[0] >= minimum_generated_ms:
                     return data
         time.sleep(0.02)
-    raise AssertionError('agent did not publish valid live data')
+    raise AssertionError('probe did not publish valid live data')
 
 
 def check_data_directory(command, root):

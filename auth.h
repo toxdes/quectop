@@ -1,5 +1,5 @@
 /* Device key lines: "ID HEX", HEX being KEY_BYTES of key, as in the hub's
- * --keys file and an agent's --key-file. The key is the Noise PSK (noise.h). */
+ * --keys file and a probe's --key-file. The key is the Noise PSK (noise.h). */
 #define KEY_BYTES 32
 
 /* Whether only the owner may read fd's file, as ssh demands of keys. */

@@ -1,6 +1,6 @@
 /* Device keys (--keys FILE): one "ID HEX" line per device, read again on every
  * connection so added and removed lines apply to the next one. When the file
- * exists, only listed devices may stream; agents beyond loopback require it. */
+ * exists, only listed devices may stream; probes beyond loopback require it. */
 #define KEYS_PATH_MAX 1024
 
 static char keys_path[KEYS_PATH_MAX];

@@ -1,6 +1,6 @@
 ---
 name: quectop
-description: Compact resource measurements and history for a Pi.
+description: Compact resource measurements and history for small Linux machines.
 colors:
   bg: "#edf1f0"
   panel: "#f8faf9"
@@ -102,7 +102,7 @@ components:
 
 **Creative North Star: "Technical dashboard"**
 
-The supplied screenshot establishes a compact measurement surface: a pale background, near-white panels, monospaced values and restrained chart colors. Six compact summaries sit above a grid of six history charts and one chart-sized Disks tile. Density serves comparison and reading measurements.
+The design is a compact measurement surface: a pale background, near-white panels, monospaced values and restrained chart colors. Six compact summaries sit above a grid of six history charts and one chart-sized Disks tile. Density serves comparison and reading measurements.
 
 The source also provides a dark theme with the same hierarchy and geometry. System fonts, native controls and canvas plots keep the interface independent of external fonts, images and libraries. There are no decorative animations.
 

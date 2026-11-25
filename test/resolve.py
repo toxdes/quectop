@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["noiseprotocol==0.3.1"]
 # ///
-"""Agent hub-name lookup, hermetic: runs in user, network and mount namespaces
+"""Probe hub-name lookup, hermetic: runs in user, network and mount namespaces
 with a fake /etc/hosts, /etc/resolv.conf and DNS server."""
 import argparse
 from pathlib import Path
@@ -67,29 +67,29 @@ def bind_file(contents, target, directory):
     subprocess.run(['mount', '--bind', str(path), target], check=True)
 
 
-def run_agent(agent_command, directory, hub, target, connects=True):
-    data = directory / ('agent-' + target.replace(':', '-'))
-    agent = subprocess.Popen(agent_command + [
+def run_probe(probe_command, directory, hub, target, connects=True):
+    data = directory / ('probe-' + target.replace(':', '-'))
+    probe = subprocess.Popen(probe_command + [
         '--data-dir', str(data), '--interval-ms', '100', '--publish-ms', '200',
         '--interface', 'lo', '--hub', target], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
         if connects:
             wait(lambda: hub.alive() and [r for r in hub.hosts() if r[1] == '1'], f'{target} not connected')
-        return agent, data
+        return probe, data
     except BaseException:
-        agent.kill()
+        probe.kill()
         raise
 
 
-def stop(agent, hub):
-    agent.terminate()
-    agent.wait(timeout=5)
-    error = agent.stderr.read()
+def stop(probe, hub):
+    probe.terminate()
+    probe.wait(timeout=5)
+    error = probe.stderr.read()
     assert not error, error
     wait(lambda: not [r for r in hub.hosts() if r[1] == '1'], 'disconnect not listed')
 
 
-def inside(agent_command, hub_command):
+def inside(probe_command, hub_command):
     subprocess.run(['ip', 'link', 'set', 'lo', 'up'], check=True)
     with tempfile.TemporaryDirectory(prefix='quectop-resolve-') as temporary:
         root = Path(temporary)
@@ -98,23 +98,23 @@ def inside(agent_command, hub_command):
         dns = Dns({'hub.example.test': '127.0.0.1'})
         hub = Hub(hub_command, root / 'hub')
         hub.start()
-        port = hub.agents
+        port = hub.probes
 
         for target in (f'From-Hosts:{port}', f'last-line-no-newline:{port}'):
-            stop(run_agent(agent_command, root, hub, target)[0], hub)
+            stop(run_probe(probe_command, root, hub, target)[0], hub)
         assert not dns.queries, f'/etc/hosts names reached DNS: {dns.queries}'
 
-        agent, _ = run_agent(agent_command, root, hub, f'HUB.Example.Test.:{port}')
+        probe, _ = run_probe(probe_command, root, hub, f'HUB.Example.Test.:{port}')
         assert dns.queries == ['hub.example.test'], dns.queries
         hub.stop()
         hub.start()
         wait(lambda: [r for r in hub.hosts() if r[1] == '1'], 'did not reconnect')
         assert dns.queries.count('hub.example.test') >= 2, 'reconnect did not look the name up again'
-        stop(agent, hub)
+        stop(probe, hub)
 
         # Failed and unanswered lookups retry with backoff and never stall sampling.
         for name in ('missing.test', 'slow.test'):
-            agent, data = run_agent(agent_command, root, hub, f'{name}:{port}', connects=False)
+            probe, data = run_probe(probe_command, root, hub, f'{name}:{port}', connects=False)
             try:
                 wait(lambda: dns.queries.count(name) >= 2, f'{name} not retried', 20)
                 live = data / 'live.v1.bin'
@@ -123,24 +123,24 @@ def inside(agent_command, hub_command):
                 wait(lambda: struct.unpack_from('<Q', live.read_bytes(), 24)[0] > before, 'sampling stalled')
                 assert not [r for r in hub.hosts() if r[1] == '1']
             finally:
-                stop(agent, hub)
+                stop(probe, hub)
         hub.stop()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--agent', default=str(ROOT / 'quectop'), help='agent command')
+    parser.add_argument('--probe', default=str(ROOT / 'quectop'), help='probe command')
     parser.add_argument('--hub', default=str(ROOT / 'quectop-hub'), help='hub command')
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.inside:
-        inside(shlex.split(args.agent), shlex.split(args.hub))
+        inside(shlex.split(args.probe), shlex.split(args.hub))
         return
     for bad in ('bad name:7070', 'a..b:7070', 'host:0', 'host', ':7070', 'x' * 64 + '.test:1'):
-        result = subprocess.run(shlex.split(args.agent) + ['--hub', bad], capture_output=True, timeout=5)
+        result = subprocess.run(shlex.split(args.probe) + ['--hub', bad], capture_output=True, timeout=5)
         assert result.returncode == 1 and b'--hub needs HOST:PORT' in result.stderr, bad
     subprocess.run(['unshare', '-rnm', sys.executable, __file__, '--inside',
-                    '--agent', args.agent, '--hub', args.hub], check=True)
+                    '--probe', args.probe, '--hub', args.hub], check=True)
     print('resolve: /etc/hosts (comments, overlong and unterminated lines), DNS via CNAME and '
           'compression, case and trailing dot, nameserver failover, lookup on every reconnect, '
           'failed and unanswered lookups without stalled sampling, and invalid names passed')

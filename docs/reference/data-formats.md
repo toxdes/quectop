@@ -1,6 +1,6 @@
 # Data formats reference
 
-The agent writes these files, and the hub keeps byte-identical copies. The dashboard decodes them in `web/codec.js`. The C writers are in `history.h`, `metrics.h`, and `disks.h`.
+The probe writes these files, and the hub keeps byte-identical copies. The dashboard decodes them in `web/codec.js`. The C writers are in `history.h`, `metrics.h`, and `disks.h`.
 
 ## Conventions
 
@@ -16,7 +16,7 @@ Each file name carries its schema version:
 | `1h.v1.bin`, `1d.v1.bin`, `7d.v1.bin`, `30d.v1.bin`, `90d.v1.bin`, `live.v1.bin` | `QUECTOP_SCHEMA_VERSION` in `protocol.h`, `schemaVersion` in `web/codec.js` |
 | `disks.v1.bin` | `QUECTOP_DISK_SCHEMA_VERSION` in `protocol.h`, `diskSchemaVersion` in `web/codec.js` |
 
-After a schema change, the agent writes new file names in the same directory. Files with other versions are ignored and left in place.
+After a schema change, the probe writes new file names in the same directory. Files with other versions are ignored and left in place.
 
 **Schema policy.** During development, the schema stays at v1 and has no readers for older versions. From the first release, every layout change bumps the schema version. The application version, 0.1.0, is separate from the schema version.
 
@@ -32,13 +32,13 @@ Here, `N` is the CPU count, `F` the number of frequency policies, `I` the interf
 | 4 | `F` frequencies | `W` | MHz. `W` is 1–16, from the highest `cpuinfo_max_freq`. |
 | 5 | Receive, then transmit, for each interface | 14 | 10-bit mantissa (0–999), 2-bit decimal count (0–2), and 2-bit unit (B, KB, MB, or GB) |
 
-A full value set takes `V = 10(N+9) + 12 + FW + 28I` bits. A rate above 999 GB/s stops the agent with an error.
+A full value set takes `V = 10(N+9) + 12 + FW + 28I` bits. A rate above 999 GB/s stops the probe with an error.
 
 The minimum set covers only memory, swap, temperature, and frequencies. It takes `L = 32 + FW` bits.
 
 ## Device metadata
 
-Device metadata follows each file header. The agent compares it byte for byte on restart.
+Device metadata follows each file header. The probe compares it byte for byte on restart.
 
 1. CPU IDs, each `id_bits` wide. `id_bits` is the smallest width that holds the highest ID.
 2. `F` pairs of the policy's first CPU ID (`id_bits`) and a 1-bit source flag. The flag is `1` for `cpuinfo_cur_freq` and `0` for `scaling_cur_freq`.

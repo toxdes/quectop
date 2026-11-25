@@ -1,6 +1,6 @@
 # Dashboard reference
 
-The dashboard is `index.html`, `style.css`, and `app.js` in the hub's data directory. It runs in the browser and decodes the agent's files with `web/codec.js`.
+The dashboard is `index.html`, `style.css`, and `app.js` in the hub's data directory. It runs in the browser and decodes the probe's files with `web/codec.js`.
 
 ## Data loading
 
@@ -76,4 +76,4 @@ Available space can be smaller than total minus used, because filesystems reserv
 
 ## Services panel
 
-The **Services** panel appears only when the agent runs with `--services`. It shows PSS by default. The selector switches to **RSS**, **Private**, or **Cgroup**. **Breakdown** under each name shows every figure. A missing figure shows `—`. See [Track service memory](../how-to/track-service-memory.md).
+The **Services** panel appears only when the probe runs with `--services`. It shows PSS by default. The selector switches to **RSS**, **Private**, or **Cgroup**. **Breakdown** under each name shows every figure. A missing figure shows `—`. See [Track service memory](../how-to/track-service-memory.md).

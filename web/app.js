@@ -8,7 +8,7 @@ let coreTopology='',cpuSystem=false,memoryFree=false,showSwap=false,interfaceInd
 let coreBarsTopology='',coreMeters=[];
 let disksSnapshot,diskError='';
 let state,visible=[],historyCache,pollTimer,busy=false,frame=0,inspection=null,inspectionFrame=0,hostId='';
-const noAgents=Error('No agents have connected to this hub yet');
+const noProbes=Error('No devices have connected to this hub yet');
 const inspectionDate=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});
 const percent=n=>n==null?'—':n.toFixed(1)+'%';
 const age=ms=>ms<60000?Math.floor(ms/1000)+'s':ms<3600000?Math.floor(ms/60000)+'m':ms<86400000?Math.floor(ms/3600000)+'h':Math.floor(ms/86400000)+'d';
@@ -218,12 +218,12 @@ function renderServices() {
   });
 }
 function status(error) {
-  if(error){statusLine.dataset.state='error';statusLine.textContent=state?'Refresh failed · showing last snapshot':error===noAgents?error.message:'Cannot load data from quectop-hub';statusLine.title=error.message;return;}
+  if(error){statusLine.dataset.state='error';statusLine.textContent=state?'Refresh failed · showing last snapshot':error===noProbes?error.message:'Cannot load data from quectop-hub';statusLine.title=error.message;return;}
   if(!state)return;
   const elapsed=Math.max(0,Date.now()-state.latestTime),stale=elapsed>Math.max(90000,state.interval*3,state.publish*3);
   statusLine.dataset.state=stale?'error':'ok';
   statusLine.textContent='uptime: '+age(state.uptime)+(stale?' · last sample '+age(elapsed)+' ago':' · sampled '+age(elapsed)+' ago');
-  statusLine.title=stale?'The agent may be stopped or disconnected.':'';
+  statusLine.title=stale?'The device may be offline, or quectop on it may be stopped.':'';
 }
 const field=(row,part,plot,k)=>row[part][plot.fields[k]];
 let colors;
@@ -334,7 +334,7 @@ async function refresh() {
   clearTimeout(pollTimer);if(document.hidden||busy)return;busy=true;
   const index=Number(range.value);
   try {
-    if(!hostId){await loadHosts();if(!hostId)throw noAgents;}
+    if(!hostId){await loadHosts();if(!hostId)throw noProbes;}
     const next=decodeLive(await download(liveFile));next.index=index;
     const active=next.active[index],key=index+':'+next.points+':'+next.interval+':'+next.metadataHash+':'+next.frequencyBits+':'+next.committed[index];
     if(!historyCache||historyCache.key!==key){const data=decodeHistory(await download(files[index]),index,next);historyCache={key,data,skipped:damagedRecords};}

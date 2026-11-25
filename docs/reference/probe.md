@@ -1,4 +1,4 @@
-# quectop agent reference
+# quectop probe reference
 
 `quectop` samples one Linux host and keeps that host's history in a data directory. It has no HTTP server and no dashboard. To see the data, stream it to [`quectop-hub`](hub.md).
 
@@ -8,7 +8,7 @@
 quectop [options]
 ```
 
-The agent runs in the foreground until it is killed. It needs no root unless the data directory or a sensor requires it.
+The probe runs in the foreground until it is killed. It needs no root unless the data directory or a sensor requires it.
 
 ## Options
 
@@ -18,7 +18,7 @@ Every option except `--help` and `--version` takes one value.
 | --- | --- | --- | --- |
 | `--data-dir DIR` | `$HOME/.local/state/quectop` | | Data directory. Created with missing parents, mode `0755` before umask. |
 | `-o DIR`, `--output DIR` | | | Aliases for `--data-dir`. |
-| `--live-dir DIR` | the data directory | | Directory for `live.v1.bin` and `disks.v1.bin`. Must exist. Use a RAM-backed directory to save SD card writes. |
+| `--live-dir DIR` | the data directory | | Directory for `live.v1.bin` and `disks.v1.bin`. Must exist. Use a RAM-backed directory to save writes to flash storage. |
 | `--interval-ms N` | `5000` | 100–3600000 | Sampling period. |
 | `--publish-ms N` | `30000` | 100–3600000 | Live snapshot period. Service queries and mount checks also run at this period. |
 | `--points N` | `1000` | 16–10000 | Windows per history range. |
@@ -36,20 +36,20 @@ There is no configuration file. Put the options in your service manager's comman
 
 ## Startup
 
-At startup, the agent does the following steps in order:
+At startup, the probe does the following steps in order:
 
 1. Parses options. An unknown option or a bad value exits with status 1 and a message on stderr.
 2. Creates the data directory, then prints its path to stdout.
-3. Takes an exclusive lock on the data directory, and on `--live-dir` when that is a different directory. A second agent on the same directory exits with `another quectop owns this data directory`.
+3. Takes an exclusive lock on the data directory, and on `--live-dir` when that is a different directory. A second probe on the same directory exits with `another quectop owns this data directory`.
 4. Reads the host name from `uname`.
 5. Detects online CPUs, CPU frequency policies, and network interfaces.
 6. Opens the five history files, or creates them when they are missing.
 
-The default data directory requires an absolute `$HOME`. The agent does not read `XDG_STATE_HOME`.
+The default data directory requires an absolute `$HOME`. The probe does not read `XDG_STATE_HOME`.
 
 ## Files
 
-The agent writes these files.
+The probe writes these files.
 
 | File | Directory | Written |
 | --- | --- | --- |
@@ -62,17 +62,17 @@ The [data formats reference](data-formats.md) describes their layout.
 
 The device layout is fixed for a set of history files. It covers the CPU IDs, the frequency policies, the frequency source, the frequency bit width, and the interfaces. `--interval-ms` and `--points` are fixed in the same way. A change to any of them makes startup fail with a configuration mismatch. To change them, use a new data directory.
 
-The agent never calls `fsync`. On power loss, it can lose the summaries in memory, the 1h records that are not yet flushed, and recent writes.
+The probe never calls `fsync`. On power loss, it can lose the summaries in memory, the 1h records that are not yet flushed, and recent writes.
 
 ## Hub connection
 
-With `--hub`, the agent also streams its files to the hub. The agent's own files stay the source of truth, and the hub keeps a replica.
+With `--hub`, the probe also streams its files to the hub. The probe's own files stay the source of truth, and the hub keeps a replica.
 
-- The agent resolves `HOST` again before every connection. It reads `/etc/hosts` first. It then sends an A query over UDP to each IPv4 `nameserver` in `/etc/resolv.conf`, with a 3 s timeout for each one. With no nameserver listed, it uses `127.0.0.1`. The agent does not support search domains, mDNS, or IPv6.
+- The probe resolves `HOST` again before every connection. It reads `/etc/hosts` first. It then sends an A query over UDP to each IPv4 `nameserver` in `/etc/resolv.conf`, with a 3 s timeout for each one. With no nameserver listed, it uses `127.0.0.1`. The probe does not support search domains, mDNS, or IPv6.
 - `--hub` rejects a URL. Write `hub.example.com:7070`, not `http://hub.example.com:7070`.
-- After a failed or lost connection, the agent retries after 1 s. Each failure doubles the delay, up to 60 s.
-- After each connection, the agent sends the history buckets that the hub is missing, oldest first.
-- Data waits in a 32 KiB outbox. When the outbox is full, the agent drops the connection, and the next connection resumes the stream. A snapshot that does not fit in the outbox is skipped until the next one.
+- After a failed or lost connection, the probe retries after 1 s. Each failure doubles the delay, up to 60 s.
+- After each connection, the probe sends the history buckets that the hub is missing, oldest first.
+- Data waits in a 32 KiB outbox. When the outbox is full, the probe drops the connection, and the next connection resumes the stream. A snapshot that does not fit in the outbox is skipped until the next one.
 - The [hub protocol reference](protocol.md) describes the wire format.
 
 **Host ID.** The hub files each host under an ID:
@@ -83,19 +83,19 @@ With `--hub`, the agent also streams its files to the hub. The agent's own files
 
 **Key file.** The key file holds one line, `NAME HEX`, where `HEX` is 64 hex digits (32 bytes).
 
-- The agent refuses a key file that other users can read. Fix it with `chmod 600 FILE`.
-- Without `--key-file`, the agent uses an all-zero key. Only a hub that listens on `127.0.0.0/8` and has no keys file accepts that key.
+- The probe refuses a key file that other users can read. Fix it with `chmod 600 FILE`.
+- Without `--key-file`, the probe uses an all-zero key. Only a hub that listens on `127.0.0.0/8` and has no keys file accepts that key.
 
 ## Services
 
 `--services` takes one name or a comma-separated list, such as `nginx,postgresql.service,my-app`. Use one `--services` option only.
 
-**Service manager.** The agent picks the manager once, at startup:
+**Service manager.** The probe picks the manager once, at startup:
 
 - It uses systemd when `/run/systemd/system` exists.
 - Otherwise, it uses OpenRC when `/run/openrc` exists.
 
-**Names.** The agent cleans up the list before it uses it:
+**Names.** The probe cleans up the list before it uses it:
 
 - With systemd, a name without `.service` gets the suffix.
 - With OpenRC, names are used as written.
@@ -104,7 +104,7 @@ With `--hub`, the agent also streams its files to the hub. The agent's own files
 
 **Missing data.** A missing manager, service, or permission makes that value unavailable. It never stops sampling.
 
-The agent reports these values for each service:
+The probe reports these values for each service:
 
 | Value | Source |
 | --- | --- |
@@ -115,11 +115,11 @@ The agent reports these values for each service:
 
 **Limits.**
 
-- The agent counts at most 256 processes and walks at most 16 cgroup levels for each service.
+- The probe counts at most 256 processes and walks at most 16 cgroup levels for each service.
 - All service queries in one publication share a 100 ms budget, and the first service rotates between publications.
 - One `smaps_rollup` read in the kernel can exceed the budget.
 
-The agent starts no helper processes and changes no accounting settings. It never controls services.
+The probe starts no helper processes and changes no accounting settings. It never controls services.
 
 ## Metrics
 
@@ -142,10 +142,10 @@ The CPU definitions follow `/proc/stat`:
 - System includes IRQ and softIRQ.
 - Steal time counts as busy, but not as user or system.
 
-**Pressure.** Each pressure value is the share of the interval in which at least one task stalled. The agent computes it from the cumulative microsecond counter, not from the kernel's averages. A kernel without PSI leaves gaps in the history.
+**Pressure.** Each pressure value is the share of the interval in which at least one task stalled. The probe computes it from the cumulative microsecond counter, not from the kernel's averages. A kernel without PSI leaves gaps in the history.
 
-**Interfaces.** By default, the agent tracks interfaces where `/sys/class/net/IF/device` exists. Bridges, `veth` devices, VPN tunnels, and loopback have no such entry, so the agent skips them.
+**Interfaces.** By default, the probe tracks interfaces where `/sys/class/net/IF/device` exists. Bridges, `veth` devices, VPN tunnels, and loopback have no such entry, so the probe skips them.
 
-**Filesystems.** The agent reports block-device filesystems (sources under `/dev/`) and ZFS pools. It removes duplicate filesystems. "Available" is the space that a user without root privileges can use.
+**Filesystems.** The probe reports block-device filesystems (sources under `/dev/`) and ZFS pools. It removes duplicate filesystems. "Available" is the space that a user without root privileges can use.
 
-**Missing readings.** A missing reading is stored as a gap, not as zero. The agent ignores a new interface until it restarts. A new CPU ID stops the agent with an error.
+**Missing readings.** A missing reading is stored as a gap, not as zero. The probe ignores a new interface until it restarts. A new CPU ID stops the probe with an error.

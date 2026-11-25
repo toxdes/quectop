@@ -1,5 +1,5 @@
 /* Exercise kernel ABI and compiler integer helpers without libc. */
-#define entry agent_entry
+#define entry probe_entry
 #include "../main.c"
 #undef entry
 

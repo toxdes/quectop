@@ -1,7 +1,7 @@
 /* Optional replication to quectop-hub (--hub). Without it, the main loop only
  * sleeps and the hooks store a length or return.
  *
- * The agent opens a Noise handshake keyed by the device key (--key-file,
+ * The probe opens a Noise handshake keyed by the device key (--key-file,
  * protocol.h); frames go out only after the hub proves it holds the same key.
  * After the ring headers, the hub replies with the newest bucket it holds per
  * tier. Each tier then backfills oldest-first from the local rings,

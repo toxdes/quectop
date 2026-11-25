@@ -1,23 +1,23 @@
 # quectop
 
-quectop shows how your Linux machines are doing: CPU, memory, temperature, network, disks, and services, with history for up to 90 days. It is small enough to run on a Raspberry Pi Zero without slowing it down.
+quectop shows how your Linux machines are doing: CPU, memory, temperature, network, disks, and services, with history for up to 90 days. It is small enough to run on single-board computers and other low-memory machines without slowing them down.
 
 - **Small.** Each program is one static file under 100 KB, with no libraries and no database.
 - **Your data stays on the device first.** Each device keeps its own history. A hub collects copies for the dashboard.
 - **Encrypted.** Devices and the hub prove to each other that they share a key before any data moves.
-- **Runs on** 64-bit x86 PCs, 64-bit ARM (Pi 3, 4, 5, Zero 2 W), and 32-bit ARM (Pi Zero, Pi 1, and older 32-bit systems) with Linux 5.1 or later.
+- **Runs on** Linux 5.1 or later, on 64-bit x86, 64-bit ARM, and 32-bit ARM (ARMv6 and later).
 
 ## How it works
 
 quectop has two programs:
 
-- **`quectop`**, the agent, runs on each machine that you want to watch. It samples the machine every 5 seconds and keeps the history on that machine.
-- **`quectop-hub`** runs on one machine and collects data from every agent. It also holds the dashboard that you open in a browser.
+- **`quectop`**, the probe, runs on each machine that you want to watch. It samples the machine every 5 seconds and keeps the history on that machine.
+- **`quectop-hub`** runs on one machine and collects data from every probe. It also holds the dashboard that you open in a browser.
 
 ```text
-quectop on your Pi ──┐
-quectop on your PC ──┼──▶ quectop-hub ──▶ dashboard in your browser
-quectop on a server ─┘
+quectop on machine A ─┐
+quectop on machine B ─┼──▶ quectop-hub ──▶ dashboard in your browser
+quectop on machine C ─┘
 ```
 
 ## Try it on one machine
@@ -34,13 +34,13 @@ quectop on a server ─┘
 	./quectop-hub --http 127.0.0.1:7080
 	```
 
-3. In a second terminal, start the agent and point it at the hub:
+3. In a second terminal, start the probe and point it at the hub:
 
 	```sh
 	./quectop --hub 127.0.0.1:7070
 	```
 
-4. Open <http://127.0.0.1:7080/>. The dashboard shows your machine. The charts fill in as the agent collects samples.
+4. Open <http://127.0.0.1:7080/>. The dashboard shows your machine. The charts fill in as the probe collects samples.
 
 Stop either program with Ctrl+C. Each program keeps its data in `~/.local/state`, and both continue where they stopped when you start them again.
 
@@ -48,11 +48,11 @@ Stop either program with Ctrl+C. Each program keeps its data in `~/.local/state`
 
 | To do this | Read |
 | --- | --- |
-| Watch a Raspberry Pi or a server from another machine | [Monitor another machine](docs/how-to/monitor-another-machine.md) |
+| Watch one machine from another machine | [Monitor another machine](docs/how-to/monitor-another-machine.md) |
 | Open the dashboard safely over the internet | [Serve the dashboard with nginx](docs/how-to/serve-dashboard-with-nginx.md) |
 | Start quectop when the machine boots | [Run quectop at boot](docs/how-to/run-at-boot.md) |
-| Build for a Raspberry Pi | [Build from source](docs/how-to/build-from-source.md) |
-| Save SD card wear on a Pi | [Reduce SD card writes](docs/how-to/reduce-sd-card-writes.md) |
+| Build for ARM or another machine | [Build from source](docs/how-to/build-from-source.md) |
+| Save wear on flash storage | [Reduce storage writes](docs/how-to/reduce-storage-writes.md) |
 | See how much memory nginx or your app uses | [Track service memory](docs/how-to/track-service-memory.md) |
 | Install a new version | [Upgrade quectop](docs/how-to/upgrade.md) |
 | Check a build | [Run the tests](docs/how-to/run-the-tests.md) |
@@ -66,6 +66,6 @@ Stop either program with Ctrl+C. Each program keeps its data in `~/.local/state`
 ## Good to know
 
 - The built-in dashboard server (`--http`) has no password. Keep it on `127.0.0.1`, or put it behind nginx with a password and HTTPS.
-- quectop does not call `fsync`, to save SD card wear. If the power fails, the device loses the history that it has not yet written.
+- quectop does not call `fsync`, to save wear on flash storage. If the power fails, the device loses the history that it has not yet written.
 - quectop has no configuration file. All settings are command-line options. Run `quectop --help` or `quectop-hub --help` for the list.
 - quectop does not support IPv6 yet.
