@@ -28,9 +28,9 @@ The probe replaces `live.v1.bin` every 30 s by default. On SD cards, eMMC, and o
 
 The probe writes `live.v1.bin` and `disks.v1.bin` to `/run/quectop`. `--live-dir` must exist when the probe starts.
 
-## Write less often
+## Reduce the write frequency
 
-These options also cut writes, at the cost of detail:
+These options also reduce writes, at the cost of resolution:
 
 | Option | Effect |
 | --- | --- |

@@ -22,7 +22,9 @@ quectop-hub --add-device NAME [--keys FILE]
 | `--version`, `-v` | | Print `quectop-hub 0.1.0` and exit. |
 | `--help` | | Print usage and exit. |
 
-**Exit errors.** At startup, the hub exits with status 1 in these cases:
+### Exit errors
+
+At startup, the hub exits with status 1 in these cases:
 
 - An option is unknown or has a bad value.
 - Another hub holds the lock on the data directory.
@@ -51,7 +53,9 @@ The hub reads the file again on every new connection. An added line works for th
 4. Appends `NAME` and a key from `getrandom`.
 5. Prints the new line to stdout and a hint to stderr.
 
-**Access rules.** The keys file decides which devices may connect:
+### Access rules
+
+The keys file decides which devices may connect:
 
 | Keys file | Who may connect |
 | --- | --- |
@@ -72,21 +76,25 @@ The data directory is the web root.
 | `h/ID/` | One host's replica: `1h.v1.bin`, `1d.v1.bin`, `7d.v1.bin`, `30d.v1.bin`, `90d.v1.bin`, `live.v1.bin`, and `disks.v1.bin`. |
 | `.*` | Temporary files and the asset revision marker. Do not serve them. |
 
-**Writes.**
+### Writes
 
 - The hub replaces snapshots and `hosts.txt` atomically.
 - It writes history buckets in place, and the dashboard checks each bucket's checksum.
 - At startup, `hosts.txt` lists hosts from earlier runs as offline until their probes connect again.
 
-**Asset revision.** The revision is the first 16 hex characters of a SHA-256 hash. The hash covers each asset's name, its byte length (little-endian), and its bytes, in the order CSS, JavaScript, HTML. It detects changed assets and is not a signature.
+### Asset revision
+
+The revision is the first 16 hex characters of a SHA-256 hash. The hash covers each asset's name, its byte length (little-endian), and its bytes, in the order CSS, JavaScript, HTML. It detects changed assets and is not a signature.
 
 ## Built-in HTTP server
 
 `--http` starts a minimal static file server for the data directory.
 
-- **Methods.** The server answers `GET` and `HEAD`. Any other method gets `405 Method Not Allowed`.
-- **Connections.** The server sends one response for each connection, then closes it. A request must arrive within 10 s.
-- **No authentication and no TLS.** Put a reverse proxy in front before you expose the server. See [Serve the dashboard with nginx](../how-to/serve-dashboard-with-nginx.md).
+| Property | Behavior |
+| --- | --- |
+| Methods | `GET` and `HEAD`. Any other method receives `405 Method Not Allowed`. |
+| Connections | One response for each connection, after which the server closes the connection. The request must arrive within 10 s. |
+| Security | No authentication and no TLS. Before exposing the server, place it behind a reverse proxy. See [Serve the dashboard with nginx](../how-to/serve-dashboard-with-nginx.md). |
 
 The server maps only these URL paths. Any other path gets `404 Not Found`.
 
@@ -132,6 +140,8 @@ A new stream for a host replaces that host's previous stream.
 
 The dashboard reads `hosts.txt`, then that host's `live.v1.bin`, `disks.v1.bin`, and the selected history file.
 
-- **Host picker.** The dashboard shows a host picker when `hosts.txt` lists more than one host. The URL hash keeps the selected host ID.
-- **Polling.** The dashboard polls every 15 s while its tab is visible. It fetches a history file only after the live snapshot reports a new window.
-- **Upgrades.** After you upgrade the hub, open dashboards may need a reload.
+- When `hosts.txt` lists more than one host, the dashboard shows a host picker. The URL hash stores the selected host ID.
+- While its tab is visible, the dashboard polls every 15 s. It fetches a history file only when the live snapshot reports a new window.
+- After a hub upgrade, open dashboards may need to be reloaded.
+
+The [dashboard reference](dashboard.md) describes the dashboard in detail.

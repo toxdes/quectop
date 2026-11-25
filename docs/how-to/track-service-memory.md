@@ -23,11 +23,14 @@ Each memory figure needs different access.
 | State, uptime, cgroup memory | Read access to the system bus or the cgroup files. Any user has it by default. |
 | RSS, PSS, USS | Read access to `/proc/PID/smaps_rollup` of every process in the service. |
 
-`smaps_rollup` is readable only by the process owner and by root. **Option 1: run the probe as root.** For example, remove `User=` from the unit in [Run quectop at boot](run-at-boot.md). **Option 2: run the probe as the service's user.** Use this option only when that user owns every process in the service.
+Only the process owner and root can read `smaps_rollup`. Use one of these options:
+
+- Run the probe as root. For example, remove `User=` from the unit in [Run quectop at boot](run-at-boot.md).
+- Run the probe as the service's user. Use this option only when that user owns every process in the service.
 
 Without access, RSS, PSS, and USS show `—`. The other figures still appear.
 
-## Read the figures
+## Interpret the figures
 
 On the dashboard, the **Services** panel shows PSS by default. Use the selector to show **RSS**, **Private**, or **Cgroup**. Expand **Breakdown** to see every figure.
 
@@ -41,6 +44,6 @@ On the dashboard, the **Services** panel shows PSS by default. Use the selector 
 
 No figure predicts exactly how much memory you free when you stop a service.
 
-## Cost
+## Performance cost
 
 The probe queries services only when it publishes, every 30 s by default. All queries in one publication share a 100 ms budget. On a busy service, one kernel `smaps_rollup` read can take longer than that.

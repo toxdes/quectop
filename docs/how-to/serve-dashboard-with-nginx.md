@@ -19,7 +19,7 @@ The built-in `--http` server has no TLS and no login. Use it only on `127.0.0.1`
 	printf 'me:%s\n' "$(openssl passwd -apr1)" | sudo tee /etc/nginx/quectop.htpasswd
 	```
 
-2. Let only the nginx user read the file:
+2. Restrict read access to the nginx user:
 
 	```sh
 	sudo chown root:www-data /etc/nginx/quectop.htpasswd
@@ -55,7 +55,7 @@ The built-in `--http` server has no TLS and no login. Use it only on `127.0.0.1`
 	sudo nginx -t && sudo systemctl reload nginx
 	```
 
-## Turn on HTTPS
+## Enable HTTPS
 
 Run certbot to get a certificate:
 
@@ -71,6 +71,6 @@ Open `https://quectop.example.com/`. The browser asks for the user name and pass
 
 | Problem | Fix |
 | --- | --- |
-| `403 Forbidden` | Let the nginx user read `/var/lib/quectop-hub` and every directory above it. |
+| `403 Forbidden` | Grant the nginx user read access to `/var/lib/quectop-hub` and to every directory above it. |
 | The page loads but shows no host | Check that `hosts.txt` exists in the data directory. The hub creates it when it starts. |
 | The data stops updating | Check that the hub is running and that the device is connected. See [Monitor another machine](monitor-another-machine.md#check-the-connection). |

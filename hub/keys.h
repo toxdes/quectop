@@ -102,7 +102,8 @@ static void add_device(const char *id) {
   check(call4(N_close, fd, 0, 0, 0), "keys file close failed");
   write_all(1, start, (unsigned long)(p - start));
   static const char hint[] =
-      "Added to the keys file. Save the line above in a file on the device, "
-      "then run:\n  quectop --hub HOST:PORT --key-file FILE\n";
+      "The key was added to the keys file. Save the line above to a file on the\n"
+      "device, restrict it with chmod 600, and run:\n"
+      "  quectop --hub HOST:PORT --key-file FILE\n";
   write_all(2, hint, sizeof(hint) - 1);
 }

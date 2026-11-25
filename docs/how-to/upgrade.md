@@ -24,10 +24,10 @@ The probe and the hub must use the same protocol version. Upgrade the hub and al
 
 When the hub starts, it installs the new dashboard files into its data directory.
 
-## When data formats change
+## Data format changes
 
 New data formats use new file names, such as `live.v2.bin`. The probe starts new files in the same data directory and leaves the old files in place. To free the space, delete the old files after the upgrade.
 
-## Change options that the history depends on
+## Change history options
 
 `--interval-ms`, `--points`, and the set of tracked CPUs and interfaces are fixed for a set of history files. To change them, start the probe with a new `--data-dir`. The probe refuses to start on a directory whose history does not match.

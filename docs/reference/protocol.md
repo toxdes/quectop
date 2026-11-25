@@ -45,11 +45,17 @@ The handshake is `Noise_NNpsk0_25519_ChaChaPoly_SHA512` from the [Noise Protocol
 | Nonce | 64-bit counter for each direction |
 | Hash | SHA-512 |
 
-**Authentication.** The hub looks up the pre-shared key by the host ID in OPEN. Only a side that holds the key can complete the handshake. Each new connection uses new ephemeral keys, so a key that leaks later cannot decrypt recorded traffic.
+### Authentication
 
-**Replay.** An attacker can replay message 1. The hub treats a device as connected only after the device's first sealed frame decrypts. Until then, the connection may stay open for 10 s.
+The hub looks up the pre-shared key by the host ID in OPEN. Only a side that holds the key can complete the handshake. Each new connection uses new ephemeral keys, so a key that leaks later cannot decrypt recorded traffic.
 
-**Visible data.** The host ID in OPEN is not encrypted. The host name is encrypted.
+### Replay
+
+An attacker can replay message 1. The hub treats a device as connected only after the device's first sealed frame decrypts. Until then, the connection may stay open for 10 s.
+
+### Visible data
+
+The host ID in OPEN is not encrypted. The host name is encrypted.
 
 ## Frames
 
@@ -80,9 +86,9 @@ While a tier is still sending old buckets, the probe does not send that tier's n
 
 ## Validation
 
-**The hub checks every frame before it writes to a replica.** It checks the type, the length, the magic number, the version, and the checksum. A bucket is written at the slot that its start time selects. Snapshots are replaced atomically.
+The hub validates every frame before it writes to a replica. It checks the type, the length, the magic number, the version, and the checksum. A bucket is written to the slot that its start time selects. Snapshots are replaced atomically.
 
-**Any invalid message closes the connection.** These are invalid:
+The hub closes the connection when it receives any of these messages:
 
 - A frame that does not decrypt.
 - A frame whose length does not match its header.

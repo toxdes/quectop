@@ -97,7 +97,7 @@ journalctl -u quectop-hub -f
 
 The hub logs rejected devices to the journal.
 
-## Related
+## Related guides
 
 - To track service memory, the probe may need more access. See [Track service memory](track-service-memory.md).
 - To change options later, edit `ExecStart`, then run `sudo systemctl daemon-reload` and `sudo systemctl restart quectop`.

@@ -4,7 +4,7 @@ This guide connects a device to a hub that runs on another machine. The device r
 
 The device must reach the hub's probe port over TCP. The hub does not connect to devices.
 
-## Give the device a key
+## Create a device key
 
 1. On the hub machine, add a key for the device. Use a short name, such as `web1`:
 
@@ -28,7 +28,9 @@ The device must reach the hub's probe port over TCP. The hub does not connect to
 
 	Treat the line like a password. Anyone who holds it can stream data as this device.
 
-**Copy over SSH instead.** If you reach the hub over SSH, you can do both steps with one command on the device:
+### Copy the key over SSH
+
+If the device has SSH access to the hub machine, this command on the device performs both steps:
 
 ```sh
 (umask 077 && ssh you@hub quectop-hub --add-device web1 > ~/.config/quectop/key)
@@ -46,7 +48,7 @@ The hub does not start with a non-loopback `--probes` address unless the keys fi
 
 ## Start the probe
 
-On the device, point the probe at the hub:
+On the device, start the probe with the hub address:
 
 ```sh
 quectop --hub hub.example.com:7070 --key-file ~/.config/quectop/key
@@ -74,7 +76,7 @@ If the device does not appear, read the hub's stderr. The hub logs every rejecte
 
 Delete the device's line from the keys file. The next connection from that device fails. You do not need to restart the hub.
 
-## Next steps
+## Related guides
 
 - To view the dashboard from a browser, see [Serve the dashboard with nginx](serve-dashboard-with-nginx.md).
 - To start both programs at boot, see [Run quectop at boot](run-at-boot.md).

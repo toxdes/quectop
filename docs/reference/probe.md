@@ -75,13 +75,17 @@ With `--hub`, the probe also streams its files to the hub. The probe's own files
 - Data waits in a 32 KiB outbox. When the outbox is full, the probe drops the connection, and the next connection resumes the stream. A snapshot that does not fit in the outbox is skipped until the next one.
 - The [hub protocol reference](protocol.md) describes the wire format.
 
-**Host ID.** The hub files each host under an ID:
+### Host ID
+
+The hub files each host under an ID:
 
 - With `--key-file`, the ID is the name on the key line.
 - Without `--key-file`, the ID is the contents of `/etc/machine-id`.
 - When `/etc/machine-id` is missing, the ID is the host name.
 
-**Key file.** The key file holds one line, `NAME HEX`, where `HEX` is 64 hex digits (32 bytes).
+### Key file
+
+The key file holds one line, `NAME HEX`, where `HEX` is 64 hex digits (32 bytes).
 
 - The probe refuses a key file that other users can read. Fix it with `chmod 600 FILE`.
 - Without `--key-file`, the probe uses an all-zero key. Only a hub that listens on `127.0.0.0/8` and has no keys file accepts that key.
@@ -90,19 +94,25 @@ With `--hub`, the probe also streams its files to the hub. The probe's own files
 
 `--services` takes one name or a comma-separated list, such as `nginx,postgresql.service,my-app`. Use one `--services` option only.
 
-**Service manager.** The probe picks the manager once, at startup:
+### Service manager
+
+The probe picks the manager once, at startup:
 
 - It uses systemd when `/run/systemd/system` exists.
 - Otherwise, it uses OpenRC when `/run/openrc` exists.
 
-**Names.** The probe cleans up the list before it uses it:
+### Names
+
+The probe cleans up the list before it uses it:
 
 - With systemd, a name without `.service` gets the suffix.
 - With OpenRC, names are used as written.
 - Duplicate names are removed.
 - An empty or invalid name stops startup.
 
-**Missing data.** A missing manager, service, or permission makes that value unavailable. It never stops sampling.
+### Missing data
+
+A missing manager, service, or permission makes that value unavailable. It never stops sampling.
 
 The probe reports these values for each service:
 
@@ -113,7 +123,7 @@ The probe reports these values for each service:
 | Cgroup memory | systemd `MemoryCurrent`, or the cgroup's `memory.current` (v2) or memory usage (v1). |
 | RSS, PSS, USS, and PSS by anonymous, file, and shared memory | Sum of `/proc/PID/smaps_rollup` over every process in the service cgroup and its descendants. |
 
-**Limits.**
+### Limits
 
 - The probe counts at most 256 processes and walks at most 16 cgroup levels for each service.
 - All service queries in one publication share a 100 ms budget, and the first service rotates between publications.
@@ -142,10 +152,19 @@ The CPU definitions follow `/proc/stat`:
 - System includes IRQ and softIRQ.
 - Steal time counts as busy, but not as user or system.
 
-**Pressure.** Each pressure value is the share of the interval in which at least one task stalled. The probe computes it from the cumulative microsecond counter, not from the kernel's averages. A kernel without PSI leaves gaps in the history.
+### Pressure
 
-**Interfaces.** By default, the probe tracks interfaces where `/sys/class/net/IF/device` exists. Bridges, `veth` devices, VPN tunnels, and loopback have no such entry, so the probe skips them.
+Each pressure value is the share of the interval in which at least one task stalled. The probe computes it from the cumulative microsecond counter, not from the kernel's averages. A kernel without PSI leaves gaps in the history.
 
-**Filesystems.** The probe reports block-device filesystems (sources under `/dev/`) and ZFS pools. It removes duplicate filesystems. "Available" is the space that a user without root privileges can use.
+### Interfaces
 
-**Missing readings.** A missing reading is stored as a gap, not as zero. The probe ignores a new interface until it restarts. A new CPU ID stops the probe with an error.
+By default, the probe tracks interfaces where `/sys/class/net/IF/device` exists. Bridges, `veth` devices, VPN tunnels, and loopback have no such entry, so the probe skips them.
+
+### Filesystems
+
+The probe reports block-device filesystems (sources under `/dev/`) and ZFS pools. It removes duplicate filesystems. "Available" is the space that a user without root privileges can use.
+
+### Missing readings
+
+A missing reading is stored as a gap, not as zero. The probe ignores a new interface until it restarts. A new CPU ID stops the probe with an error.
+

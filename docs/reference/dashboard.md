@@ -37,19 +37,33 @@ Every request uses `cache: 'no-cache'` and times out after 10 s. The dashboard d
 | Temperature | °C |
 | Network | Receive and transmit rate of the selected interface |
 
-**Ranges.** The range picker selects 1h, 1d, 7d, 30d, or 90d. The default is 1h.
+### Ranges
 
-**Theme.** The theme button in the header switches between the light and dark themes.
+The range picker selects 1h, 1d, 7d, 30d, or 90d. The default is 1h.
 
-**Lines and bands.** Each line is the window mean. The band behind a line spans minimum to maximum where the minimum is stored, and mean to maximum elsewhere.
+### Theme
 
-**Axes.** Each vertical axis fits the extremes of the selected range, with padding. Percentage axes stay within 0–100%. Charts use different scales, so read the axes when you compare charts.
+The theme button in the header switches between the light and dark themes.
 
-**Gaps.** A missing window is a gap, not zero.
+### Lines and bands
 
-**Frequency source.** A frequency series from `scaling_cur_freq` is labeled as driver-reported. Neither frequency nor temperature alone proves throttling.
+Each line is the window mean. The band behind a line spans minimum to maximum where the minimum is stored, and mean to maximum elsewhere.
 
-**Bars mode.** Bars use two columns, such as eight rows for 16 cores, and one column on narrow screens. The panel scrolls when there are many CPUs. Bars reuse the latest sample and fetch nothing extra.
+### Axes
+
+Each vertical axis fits the extremes of the selected range, with padding. Percentage axes stay within 0–100%. Charts use different scales, so read the axes when you compare charts.
+
+### Gaps
+
+A missing window is a gap, not zero.
+
+### Frequency source
+
+A frequency series from `scaling_cur_freq` is labeled as driver-reported. Neither frequency nor temperature alone proves throttling.
+
+### Bars mode
+
+Bars use two columns, such as eight rows for 16 cores, and one column on narrow screens. The panel scrolls when there are many CPUs. Bars reuse the latest sample and fetch nothing extra.
 
 ### Inspect a chart
 

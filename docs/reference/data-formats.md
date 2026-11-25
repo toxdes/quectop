@@ -18,7 +18,9 @@ Each file name carries its schema version:
 
 After a schema change, the probe writes new file names in the same directory. Files with other versions are ignored and left in place.
 
-**Schema policy.** During development, the schema stays at v1 and has no readers for older versions. From the first release, every layout change bumps the schema version. The application version, 0.1.0, is separate from the schema version.
+### Schema policy
+
+During development, the schema stays at v1 and has no readers for older versions. From the first release, every layout change bumps the schema version. The application version, 0.1.0, is separate from the schema version.
 
 ## Metrics
 
@@ -59,7 +61,9 @@ Each history file has a 64-byte header, the device metadata, then `points − 1`
 | 60 | FNV-1a over bytes 0–59 and the device metadata |
 | 64 | Device metadata |
 
-**Ranges.** The five tiers cover 1 hour, 1 day, 7 days, 30 days, and 90 days.
+### Ranges
+
+The five tiers cover 1 hour, 1 day, 7 days, 30 days, and 90 days.
 
 - A window is `ceil(span / (points − 1))` seconds wide.
 - A 1h window is at least `ceil(interval_ms / 1000)` seconds.
@@ -78,7 +82,9 @@ A record holds these fields, in order:
 
 Validity applies to a metric across all sets. A reader skips a record with a bad checksum.
 
-**Example size.** The example host has four CPUs, one 10-bit frequency policy, interface `wlan0`, 1000 points, and 5 s samples:
+### Example size
+
+The example host has four CPUs, one 10-bit frequency policy, interface `wlan0`, 1000 points, and 5 s samples:
 
 | File | Window | Bytes |
 | --- | ---: | ---: |

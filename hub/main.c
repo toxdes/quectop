@@ -77,24 +77,27 @@ static long listen_on(const char *spec, const char *what, struct endpoint *at) {
 
 static void help(void) {
   static const char s[] =
-      "quectop-hub " QUECTOP_VERSION
-      ": receives quectop probes, no libc\n"
+      "quectop-hub " QUECTOP_VERSION ": receives data from quectop probes\n"
       "Usage: quectop-hub [options]\n"
-      "  --probes IPV4:PORT  probe stream address (default 127.0.0.1:7070)\n"
-      "  --http IPV4:PORT    also serve the data directory (default off)\n"
-      "  --cors ORIGIN       let ORIGIN (or *) read --http responses\n"
-      "  --keys FILE         device keys (default "
-      "$HOME/.config/quectop-hub/keys);\n"
-      "                      required when --probes is not on 127.0.0.1\n"
-      "  --add-device NAME   add a key for NAME to the keys file, print it, "
-      "exit\n"
-      "  --data-dir DIR      created if missing (default "
-      "$HOME/.local/state/quectop-hub)\n"
-      "  --version, -v       show version\n"
-      "  --help              show help\n"
-      "Streams are encrypted; device keys authenticate both ends.\n"
-      "The data directory is a static site: serve it with --http or any web "
-      "server.\n";
+      "       quectop-hub --add-device NAME [--keys FILE]\n"
+      "\n"
+      "Options:\n"
+      "  --probes IPV4:PORT  Address for probe connections\n"
+      "                      (default: 127.0.0.1:7070)\n"
+      "  --http IPV4:PORT    Serve the data directory over HTTP (default: off)\n"
+      "  --cors ORIGIN       Allow ORIGIN, or *, to read --http responses\n"
+      "  --keys FILE         Device keys file, required when --probes is not on\n"
+      "                      127.0.0.0/8 (default: $HOME/.config/quectop-hub/keys)\n"
+      "  --add-device NAME   Add a key for NAME to the keys file, print the key\n"
+      "                      line, and exit\n"
+      "  --data-dir DIR      Data directory, created if missing\n"
+      "                      (default: $HOME/.local/state/quectop-hub)\n"
+      "  -v, --version       Print the version and exit\n"
+      "  --help              Print this help and exit\n"
+      "\n"
+      "Connections are encrypted. Device keys authenticate both ends.\n"
+      "The data directory is a static website. Serve it with --http or with any\n"
+      "static web server.\n";
   write_all(1, s, sizeof(s) - 1);
 }
 

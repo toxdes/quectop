@@ -1,71 +1,79 @@
 # quectop
 
-quectop shows how your Linux machines are doing: CPU, memory, temperature, network, disks, and services, with history for up to 90 days. It is small enough to run on single-board computers and other low-memory machines without slowing them down.
+quectop is a resource monitor for Linux. It records CPU, memory, temperature, network, disk, and service usage, and keeps up to 90 days of history. It is designed for machines with limited memory and storage, such as single-board computers.
 
-- **Small.** Each program is one static file under 100 KB, with no libraries and no database.
-- **Your data stays on the device first.** Each device keeps its own history. A hub collects copies for the dashboard.
-- **Encrypted.** Devices and the hub prove to each other that they share a key before any data moves.
-- **Runs on** Linux 5.1 or later, on 64-bit x86, 64-bit ARM, and 32-bit ARM (ARMv6 and later).
+## Features
 
-## How it works
+- Each program is a single static binary of less than 100 KB. No libraries or database are required.
+- Each device stores its own history. A hub collects copies of the history and serves the dashboard.
+- Connections between devices and the hub are encrypted and authenticated with a per-device key.
+- Supported systems: Linux 5.1 or later on x86-64, 64-bit ARM, and 32-bit ARM (ARMv6 or later).
 
-quectop has two programs:
+## Overview
 
-- **`quectop`**, the probe, runs on each machine that you want to watch. It samples the machine every 5 seconds and keeps the history on that machine.
-- **`quectop-hub`** runs on one machine and collects data from every probe. It also holds the dashboard that you open in a browser.
+quectop consists of two programs:
+
+| Program | Role |
+| --- | --- |
+| `quectop` (the probe) | Runs on each monitored machine. It samples the machine every 5 seconds and stores the history on that machine. |
+| `quectop-hub` (the hub) | Runs on one machine. It receives data from all probes and provides the dashboard for a web browser. |
 
 ```text
 quectop on machine A ─┐
-quectop on machine B ─┼──▶ quectop-hub ──▶ dashboard in your browser
+quectop on machine B ─┼──▶ quectop-hub ──▶ dashboard in a web browser
 quectop on machine C ─┘
 ```
 
-## Try it on one machine
+## Quick start
 
-1. Build both programs. You need a C compiler, `make`, Python 3, and [Bun](https://bun.sh):
+These steps run the probe and the hub on the same machine.
+
+1. Build both programs. The build requires a C compiler, `make`, Python 3, and [Bun](https://bun.sh):
 
 	```sh
 	make
 	```
 
-2. Start the hub with its dashboard on port 7080:
+2. Start the hub, with the dashboard on port 7080:
 
 	```sh
 	./quectop-hub --http 127.0.0.1:7080
 	```
 
-3. In a second terminal, start the probe and point it at the hub:
+3. In a second terminal, start the probe and connect it to the hub:
 
 	```sh
 	./quectop --hub 127.0.0.1:7070
 	```
 
-4. Open <http://127.0.0.1:7080/>. The dashboard shows your machine. The charts fill in as the probe collects samples.
+4. Open <http://127.0.0.1:7080/>. The dashboard shows the machine, and the charts fill in as the probe collects samples.
 
-Stop either program with Ctrl+C. Each program keeps its data in `~/.local/state`, and both continue where they stopped when you start them again.
+To stop either program, press Ctrl+C. Both programs keep their data in `~/.local/state` and resume from it when they start again.
 
-## Next steps
+## Guides
 
-| To do this | Read |
+| Task | Guide |
 | --- | --- |
-| Watch one machine from another machine | [Monitor another machine](docs/how-to/monitor-another-machine.md) |
-| Open the dashboard safely over the internet | [Serve the dashboard with nginx](docs/how-to/serve-dashboard-with-nginx.md) |
-| Start quectop when the machine boots | [Run quectop at boot](docs/how-to/run-at-boot.md) |
-| Build for ARM or another machine | [Build from source](docs/how-to/build-from-source.md) |
-| Save wear on flash storage | [Reduce storage writes](docs/how-to/reduce-storage-writes.md) |
-| See how much memory nginx or your app uses | [Track service memory](docs/how-to/track-service-memory.md) |
+| Monitor a machine from another machine | [Monitor another machine](docs/how-to/monitor-another-machine.md) |
+| Serve the dashboard over HTTPS with a password | [Serve the dashboard with nginx](docs/how-to/serve-dashboard-with-nginx.md) |
+| Start quectop at boot | [Run quectop at boot](docs/how-to/run-at-boot.md) |
+| Build for ARM | [Build from source](docs/how-to/build-from-source.md) |
+| Reduce writes to flash storage | [Reduce storage writes](docs/how-to/reduce-storage-writes.md) |
+| Report the memory use of system services | [Track service memory](docs/how-to/track-service-memory.md) |
 | Install a new version | [Upgrade quectop](docs/how-to/upgrade.md) |
-| Check a build | [Run the tests](docs/how-to/run-the-tests.md) |
+| Test a build | [Run the tests](docs/how-to/run-the-tests.md) |
 
 ## Documentation
 
-- **[How-to guides](docs/how-to/README.md)** give the steps for one task.
-- **[Reference](docs/reference/README.md)** lists every option, file, and protocol message.
-- **[Architecture](docs/architecture.md)** explains how quectop is built and why.
+| Document | Content |
+| --- | --- |
+| [How-to guides](docs/how-to/README.md) | Procedures for specific tasks |
+| [Reference](docs/reference/README.md) | Options, files, and protocol messages |
+| [Architecture](docs/architecture.md) | Design of quectop and the reasons for it |
 
-## Good to know
+## Limitations
 
-- The built-in dashboard server (`--http`) has no password. Keep it on `127.0.0.1`, or put it behind nginx with a password and HTTPS.
-- quectop does not call `fsync`, to save wear on flash storage. If the power fails, the device loses the history that it has not yet written.
-- quectop has no configuration file. All settings are command-line options. Run `quectop --help` or `quectop-hub --help` for the list.
-- quectop does not support IPv6 yet.
+- The built-in dashboard server (`--http`) has no authentication. Bind it to `127.0.0.1`, or serve the dashboard through a web server with authentication and HTTPS.
+- quectop does not call `fsync`, to reduce flash wear. On power loss, history that has not yet been written is lost.
+- quectop has no configuration file. All settings are command-line options. For the list, run `quectop --help` or `quectop-hub --help`.
+- IPv6 is not supported.

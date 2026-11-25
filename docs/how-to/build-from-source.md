@@ -44,7 +44,7 @@ scp dist/quectop-linux-arm64/quectop user@device.example.com:
 
 The device needs only the `quectop` binary. Copy `quectop-hub` only to the machine that runs the hub.
 
-## Next steps
+## Related guides
 
 - To check the build, see [Run the tests](run-the-tests.md).
 - To start monitoring, see [Monitor another machine](monitor-another-machine.md).
