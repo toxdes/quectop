@@ -67,6 +67,12 @@ A record stores each metric at the precision that it needs, such as 10 bits for 
 
 The probe does not call `fsync`. On power loss, it loses at most the open windows and the most recent writes. Each record has a checksum, so a reader skips a partially written record. Calling `fsync` on every write would increase flash wear for data that the next sample replaces.
 
+### Clock changes
+
+Each device uses its own wall clock, and no clock is shared between devices. A device without a battery-backed clock can boot with a time in the past and step forward when NTP synchronizes. Records are placed by their start time, so a record with a past time would overwrite real history. While the kernel reports the clock as unsynchronized, the probe therefore does not store a window that is not newer than the newest stored record. The [probe reference](reference/probe.md#clock-changes) describes the rule.
+
+The dashboard decides whether a device is offline from the hub's connection state in `hosts.txt`, and measures freshness with the browser clock only. A wrong device clock therefore does not make a device appear offline.
+
 ## Hub
 
 The hub (`hub/main.c`) runs these modules in one loop:

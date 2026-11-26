@@ -20,6 +20,7 @@ const node=()=>({value:'0',dataset:{},style:{},textContent:'',listeners:{},attri
   parentElement:{listeners:{},addEventListener(name,fn){this.listeners[name]=fn;}}});
 const nodes=Object.fromEntries(ids.map(id=>[id,node()])),requests=[],hostRequests=[],windowListeners={};
 const location={hash:'',reloads:0,reload(){this.reloads++;}};
+let hostsText='fixture\t1\tfixture-host\nother\t0\tother-host\n';
 nodes.range.value='1';
 nodes['service-memory-mode'].value='pss';
 const document={hidden:false,documentElement:node(),listeners:{},createElement:node,getElementById(id){if(!nodes[id])throw Error('Missing element '+id);return nodes[id];},querySelector:node,addEventListener(name,fn){this.listeners[name]=fn;}};
@@ -28,7 +29,7 @@ const context=vm.createContext({document,console,location,addEventListener(name,
   requestAnimationFrame(fn){frames.push(fn);return 1;},clearTimeout(){timer=null;},setTimeout(fn){timer=fn;return 1;},
   ResizeObserver:class{observe(){}},matchMedia:()=>({matches:false}),localStorage:{getItem:()=>null,setItem:noop},
   async fetch(name){
-    if(name==='hosts.txt')return {ok:true,text:async()=>'fixture\t1\tfixture-host\nother\t0\tother-host\n'};
+    if(name==='hosts.txt')return {ok:true,text:async()=>hostsText};
     hostRequests.push(name);name=name.replace(/^h\/fixture\//,'');requests.push(name);
     if(failNext){failNext=false;throw Error('simulated disconnect');}
     const bytes=fs.readFileSync(fixture+'/'+name);return {ok:true,arrayBuffer:async()=>bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength)};}
@@ -85,6 +86,12 @@ async function main(){
   canvas.listeners.focus();canvas.listeners.keydown({key:'Home',preventDefault:noop});await settle();const oldest=details.textContent;
   canvas.listeners.keydown({key:'End',preventDefault:noop});await settle();assert(oldest!==details.textContent,'keyboard history navigation');canvas.listeners.blur();
   nodes.theme.listeners.click();await settle();assert(document.documentElement.dataset.theme==='dark','theme switch');
+  assert(nodes.status.dataset.state==='ok'&&nodes.status.textContent.endsWith(' · connected'),'connected device: '+nodes.status.textContent);
+  hostsText='fixture\t0\tfixture-host\nother\t0\tother-host\n';await poll();
+  assert(nodes.status.dataset.state==='error'&&nodes.status.textContent.endsWith(' · offline'),'hub reports the device offline: '+nodes.status.textContent);
+  assert(nodes.hosts.children[0].textContent==='fixture-host (offline)','host picker follows hosts.txt');
+  hostsText='fixture\t1\tfixture-host\nother\t0\tother-host\n';await poll();
+  assert(nodes.status.dataset.state==='ok','device reconnects');
   const previous=nodes.overall.textContent;failNext=true;await poll();assert(nodes.status.dataset.state==='error','failed refresh state');
   assert(nodes.overall.textContent===previous,'retain last good measurements');
   nodes.hosts.value='other';nodes.hosts.listeners.change();assert(location.hash==='other','host choice is kept in the URL');

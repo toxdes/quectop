@@ -148,6 +148,12 @@ static void hub_open(void) {
   }
   int one = 1; /* IPPROTO_TCP, TCP_NODELAY: frames are already batched. */
   call6(N_setsockopt, hub_fd, 6, 1, (long)&one, sizeof(one), 0);
+  /* TCP_USER_TIMEOUT: a hub that stops acknowledging, as on a lost route,
+   * drops the stream after the hub's own idle limit instead of after the
+   * kernel's retransmission limit of about 15 minutes. */
+  u32 unacknowledged_ms = 3 * publish + 60000;
+  call6(N_setsockopt, hub_fd, 6, 18, (long)&unacknowledged_ms,
+        sizeof(unacknowledged_ms), 0);
   long result = call4(N_connect, hub_fd, (long)&hub_endpoint,
                       sizeof(hub_endpoint), 0);
   if (result < 0 && result != -115) /* EINPROGRESS */

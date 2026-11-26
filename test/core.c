@@ -1,6 +1,11 @@
 #ifdef QUECTOP_TEST_FREESTANDING
 #define entry probe_entry
 #endif
+/* The wall-clock guard asks the kernel whether NTP has synchronized the
+ * clock; tests choose the answer. */
+#define QUECTOP_CLOCK_SYNCHRONIZED
+static int test_synchronized;
+static int clock_synchronized(void) { return test_synchronized; }
 #include "../main.c"
 #ifdef QUECTOP_TEST_FREESTANDING
 #undef entry
@@ -84,6 +89,37 @@ static void check_sampling(void) {
   }
 }
 
+/* After publication: a wall clock behind stored history must not overwrite it
+ * until the clock is synchronized. Runs last; it stores nothing. */
+static void check_clock_guard(void) {
+  for (u32 i = 1; i < TIERS; ++i)
+    if (!committed[i] || newest_stored(&tiers[i]) != committed[i] ||
+        newest[i] != committed[i])
+      fail("startup scan finds the newest stored window");
+  test_synchronized = 0;
+  for (u32 i = 0; i < TIERS; ++i)
+    if (may_store(i, newest[i]) || may_store(i, newest[i] - tiers[i].width) ||
+        !may_store(i, newest[i] + tiers[i].width))
+      fail("unsynchronized clock behind stored history");
+  /* The clock steps back a day; open windows are discarded first so that
+   * every window closed below is dated before stored history. */
+  for (u32 i = 0; i < TIERS; ++i)
+    tiers[i].active.start = 0;
+  u32 back = newest[TIERS - 1] - 86400, before[TIERS],
+      pending_before = pending_count;
+  memcpy(before, committed, sizeof(before));
+  for (u32 step = 0; step < 4; ++step) {
+    latest.sec = back + step * tiers[TIERS - 1].width;
+    update_tiers();
+  }
+  for (u32 i = 0; i < TIERS; ++i)
+    if (before[i] != committed[i] || pending_count != pending_before)
+      fail("windows dated before stored history were stored");
+  test_synchronized = 1;
+  if (!may_store(0, newest[0] - tiers[0].width))
+    fail("synchronized clock stores");
+}
+
 /* Real CPU discovery/parsing and packed ring I/O, with deterministic inputs. */
 int main(int argc, char **argv) {
   if (argc != 6)
@@ -162,6 +198,7 @@ int main(int argc, char **argv) {
   }
   publish_disks();
   publish_live();
+  check_clock_guard();
   return 0;
 }
 

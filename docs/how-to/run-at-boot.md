@@ -67,6 +67,8 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin quectop
 	```ini
 	[Unit]
 	Description=quectop probe
+	After=time-sync.target
+	Wants=time-sync.target
 
 	[Service]
 	User=quectop
@@ -79,9 +81,26 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin quectop
 	WantedBy=multi-user.target
 	```
 
-	The probe retries the hub on its own, so the unit does not wait for the network.
+	The probe retries the hub on its own, so the unit does not wait for the network. The unit waits for `time-sync.target`, so that history is recorded with a correct clock.
 
-3. Start the probe:
+3. Make `time-sync.target` wait until NTP has synchronized the clock. With `systemd-timesyncd`, enable `systemd-time-wait-sync.service`:
+
+	```sh
+	sudo systemctl enable systemd-time-wait-sync.service
+	```
+
+	With chrony, enable `chrony-wait.service` instead.
+
+4. Limit the wait to 2 minutes. `systemd-time-wait-sync.service` waits without a limit by default, so a device without network access would never start the probe. Create a drop-in with `sudo systemctl edit systemd-time-wait-sync.service`, with this content:
+
+	```ini
+	[Service]
+	TimeoutStartSec=2min
+	```
+
+	If the clock is still unsynchronized after the limit, the probe starts and does not overwrite stored history. See [Clock changes](../reference/probe.md#clock-changes).
+
+5. Start the probe:
 
 	```sh
 	sudo systemctl daemon-reload

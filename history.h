@@ -20,6 +20,8 @@ static char host_name[64];
 static u8 host_name_bytes;
 static u32 max_record, live_capacity, pending_capacity, pending_count,
     pending_first, pending_last, committed[TIERS];
+/* Newest window start stored per tier, from the rings at startup. */
+static u32 newest[TIERS];
 
 static void encode_bucket(const struct tier *tier, u8 *dest) {
   const struct accumulator *a = &tier->active;
@@ -66,11 +68,20 @@ static void store_bucket(u32 i) {
            t->record_bytes);
     ++pending_count;
     pending_last = t->active.start;
+    newest[0] = t->active.start;
   } else {
     positioned(t->fd, wire, t->record_bytes,
                header_bytes + (u64)slot * t->record_bytes, 1);
     committed[i] = t->active.start;
+    newest[i] = t->active.start;
   }
+}
+/* A window no newer than the newest stored one means the wall clock went
+ * back, as after booting without a battery-backed clock. Storing it would
+ * overwrite real history, so it is dropped until NTP synchronizes the clock;
+ * once synchronized, the clock wins over stored windows dated in the future. */
+static int may_store(u32 i, u32 start) {
+  return start > newest[i] || clock_synchronized();
 }
 static void reset_accumulator(struct accumulator *a) {
   memset(a->sum, 0, metrics * sizeof(*a->sum));
@@ -87,7 +98,8 @@ static void update_tiers(void) {
     struct accumulator *a = &t->active;
     u32 start = latest.sec / t->width * t->width;
     if (a->start && start != a->start) {
-      store_bucket(i);
+      if (may_store(i, a->start))
+        store_bucket(i);
       reset_accumulator(a);
     }
     a->start = start;
@@ -165,6 +177,23 @@ static void publish_live(void) {
               live_directory_fd, (long)LIVE_FILE),
         "live snapshot rename failed");
 }
+/* Newest valid window start in a ring, read through live; 0 for none. */
+static u32 newest_stored(const struct tier *t) {
+  u32 per = live_capacity / t->record_bytes, found = 0;
+  for (u32 slot = 0; slot < points - 1; slot += per) {
+    u32 n = points - 1 - slot < per ? points - 1 - slot : per;
+    positioned(t->fd, live, (unsigned long)n * t->record_bytes,
+               header_bytes + (u64)slot * t->record_bytes, 0);
+    for (u32 j = 0; j < n; ++j) {
+      const u8 *r = live + (unsigned long)j * t->record_bytes;
+      u32 start = load_le32(r);
+      if (start > found && start / t->width % (points - 1) == slot + j &&
+          load_le32(r + t->record_bytes - 4) == hash(r, t->record_bytes - 4))
+        found = start;
+    }
+  }
+  return found;
+}
 /* utsname: six 65-byte fields; nodename is the second. Uses proc scratch. */
 static void read_host_name(void) {
   if (call4(N_uname, (long)input, 0, 0, 0) < 0)
@@ -217,6 +246,7 @@ static void open_history(void) {
           fail("device metadata differs; use a new data directory");
       if ((u64)size != wanted)
         fail("history ring has unexpected size");
+      newest[i] = newest_stored(t);
     } else {
       check(truncate_file(t->fd, wanted), "cannot size history ring");
       positioned(t->fd, expected, sizeof(expected), 0, 1);

@@ -132,6 +132,7 @@ Connection: close
 | Probe connections at once | 64 |
 | HTTP connections at once | 32 |
 | Time from connect to the first decrypted frame | 10 s |
+| Time without a frame before a connected device is marked offline | 3 × the device's `--publish-ms` + 60 s |
 | History ring file | 256 MiB |
 
 A new stream for a host replaces that host's previous stream.
@@ -140,7 +141,7 @@ A new stream for a host replaces that host's previous stream.
 
 The dashboard reads `hosts.txt`, then that host's `live.v1.bin`, `disks.v1.bin`, and the selected history file.
 
-- When `hosts.txt` lists more than one host, the dashboard shows a host picker. The URL hash stores the selected host ID.
+- The dashboard reads `hosts.txt` on every poll. When the file lists more than one host, the dashboard shows a host picker. The URL hash stores the selected host ID.
 - While its tab is visible, the dashboard polls every 15 s. It fetches a history file only when the live snapshot reports a new window.
 - After a hub upgrade, open dashboards may need to be reloaded.
 

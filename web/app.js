@@ -7,7 +7,7 @@ const seriesColor=k=>k<colorNames.length?'var('+colorNames[k]+')':'hsl('+((k*137
 let coreTopology='',cpuSystem=false,memoryFree=false,showSwap=false,interfaceIndex=0,selectedInterface;
 let coreBarsTopology='',coreMeters=[];
 let disksSnapshot,diskError='';
-let state,visible=[],historyCache,pollTimer,busy=false,frame=0,inspection=null,inspectionFrame=0,hostId='';
+let state,visible=[],historyCache,pollTimer,busy=false,frame=0,inspection=null,inspectionFrame=0,hostId='',hostsText='',hostConnected=true,changedAt=0;
 const noProbes=Error('No devices have connected to this hub yet');
 const inspectionDate=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});
 const percent=n=>n==null?'—':n.toFixed(1)+'%';
@@ -220,10 +220,11 @@ function renderServices() {
 function status(error) {
   if(error){statusLine.dataset.state='error';statusLine.textContent=state?'Refresh failed · showing last snapshot':error===noProbes?error.message:'Cannot load data from quectop-hub';statusLine.title=error.message;return;}
   if(!state)return;
-  const elapsed=Math.max(0,Date.now()-state.latestTime),stale=elapsed>Math.max(90000,state.interval*3,state.publish*3);
-  statusLine.dataset.state=stale?'error':'ok';
-  statusLine.textContent='uptime: '+age(state.uptime)+(stale?' · last sample '+age(elapsed)+' ago':' · sampled '+age(elapsed)+' ago');
-  statusLine.title=stale?'The device may be offline, or quectop on it may be stopped.':'';
+  /* Freshness uses only the browser clock: the device clock may be wrong. */
+  const quiet=Date.now()-changedAt,stale=quiet>Math.max(90000,state.interval*3,state.publish*3);
+  statusLine.dataset.state=!hostConnected||stale?'error':'ok';
+  statusLine.textContent='uptime: '+age(state.uptime)+(!hostConnected?' · offline':stale?' · no new data for '+age(quiet):' · connected');
+  statusLine.title=!hostConnected?'The hub has no connection from this device.':stale?'The device is connected, but no new data has arrived.':'';
 }
 const field=(row,part,plot,k)=>row[part][plot.fields[k]];
 let colors;
@@ -324,17 +325,22 @@ async function request(name) {
 const download=async name=>(await request('h/'+encodeURIComponent(hostId)+'/'+name)).arrayBuffer();
 /* Hub lines: id, connected (0/1), hostname. The URL hash selects a host. */
 async function loadHosts() {
-  const hosts=(await (await request('hosts.txt')).text()).split('\n').filter(Boolean).map(line=>{const[id,connected,name]=line.split('\t');return{id,connected:connected==='1',name:name||id};});
+  const text=await (await request('hosts.txt')).text();
+  const hosts=text.split('\n').filter(Boolean).map(line=>{const[id,connected,name]=line.split('\t');return{id,connected:connected==='1',name:name||id};});
+  const selected=hosts.find(h=>h.id===hostId);
+  if(selected&&text===hostsText){hostConnected=selected.connected;return;}
+  hostsText=text;
   const wanted=hostId||decodeURIComponent(location.hash.slice(1));
   hostId=(hosts.find(h=>h.id===wanted)||hosts.find(h=>h.connected)||hosts[0])?.id||'';
   hostSelect.replaceChildren(...hosts.map(h=>{const option=document.createElement('option');option.value=h.id;option.textContent=h.name+(h.connected?'':' (offline)');option.selected=h.id===hostId;return option;}));
   hostSelect.hidden=hosts.length<2;
+  hostConnected=Boolean(hosts.find(h=>h.id===hostId)?.connected);
 }
 async function refresh() {
   clearTimeout(pollTimer);if(document.hidden||busy)return;busy=true;
   const index=Number(range.value);
   try {
-    if(!hostId){await loadHosts();if(!hostId)throw noProbes;}
+    await loadHosts();if(!hostId)throw noProbes;
     const next=decodeLive(await download(liveFile));next.index=index;
     const active=next.active[index],key=index+':'+next.points+':'+next.interval+':'+next.metadataHash+':'+next.frequencyBits+':'+next.committed[index];
     if(!historyCache||historyCache.key!==key){const data=decodeHistory(await download(files[index]),index,next);historyCache={key,data,skipped:damagedRecords};}
@@ -346,6 +352,7 @@ async function refresh() {
     for(const r of recent)if(r.start+width>cutoff)rows.push(r);
     visible=rows.length>next.points?rows.slice(-next.points):rows;
     if(next.hostname!==state?.hostname){text('host',next.hostname);document.title=(next.hostname?next.hostname+' · ':'')+'quectop';}
+    if(next.generated!==state?.generated)changedAt=Date.now();
     state=next;configurePlots();summaries();renderServices();queueDraw();
     if(!disksSnapshot||disksSnapshot.generated!==next.disksGenerated){
       try{const snapshot=decodeDisks(await download(disksFile));if(snapshot.generated>=next.disksGenerated){disksSnapshot=snapshot;diskError='';}}

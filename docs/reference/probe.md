@@ -64,6 +64,10 @@ The device layout is fixed for a set of history files. It covers the CPU IDs, th
 
 The probe never calls `fsync`. On power loss, it can lose the summaries in memory, the 1h records that are not yet flushed, and recent writes.
 
+### Clock changes
+
+History records are stored by wall-clock time. At startup, the probe reads the start time of the newest valid record in each history file. A window that is not newer than that record means that the wall clock has gone back, for example after a boot without a battery-backed clock. The probe does not store such a window while the kernel reports the clock as unsynchronized, so stored history is never overwritten. Live values are still published. When NTP has synchronized the clock, the probe stores every window, even when a stored record is dated later.
+
 ## Hub connection
 
 With `--hub`, the probe also streams its files to the hub. The probe's own files stay the source of truth, and the hub keeps a replica.
@@ -71,6 +75,7 @@ With `--hub`, the probe also streams its files to the hub. The probe's own files
 - The probe resolves `HOST` again before every connection. It reads `/etc/hosts` first. It then sends an A query over UDP to each IPv4 `nameserver` in `/etc/resolv.conf`, with a 3 s timeout for each one. With no nameserver listed, it uses `127.0.0.1`. The probe does not support search domains, mDNS, or IPv6.
 - `--hub` rejects a URL. Write `hub.example.com:7070`, not `http://hub.example.com:7070`.
 - After a failed or lost connection, the probe retries after 1 s. Each failure doubles the delay, up to 60 s.
+- When the hub acknowledges no data for 3 × `--publish-ms` + 60 s, the probe closes the connection (`TCP_USER_TIMEOUT`). This limit matches the hub's idle limit.
 - After each connection, the probe sends the history buckets that the hub is missing, oldest first.
 - Data waits in a 32 KiB outbox. When the outbox is full, the probe drops the connection, and the next connection resumes the stream. A snapshot that does not fit in the outbox is skipped until the next one.
 - The [hub protocol reference](protocol.md) describes the wire format.

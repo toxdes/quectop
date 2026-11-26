@@ -82,6 +82,10 @@ void entry(long *stack) {
   struct timespec zero = {0, 0};
   if (call6(N_ppoll, 0, 0, (long)&zero, 0, 8, 0))
     fail("time64 nonblocking poll failed");
+  u64 timex[32] = {0}; /* read-only query: TIME_OK..TIME_ERROR */
+  long clock_state = call4(N_clock_adjtime, 0, (long)timex, 0, 0);
+  if (clock_state < 0 || clock_state > 5)
+    fail("time64 clock state query failed");
   long mapped = call6(N_mmap,
 #if defined(__arm__)
                       (long)0x90000000U,

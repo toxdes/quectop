@@ -45,6 +45,7 @@ enum {
   N_rename = 264,
   N_getrandom = 318,
   N_statx = 332,
+  N_clock_adjtime = 305,
   N_mprotect = 10
 };
 static inline long call4(long n, long a, long b, long c, long d) {
@@ -101,6 +102,7 @@ enum {
   N_rename = 38,
   N_getrandom = 278,
   N_statx = 291,
+  N_clock_adjtime = 266,
   N_mprotect = 226
 };
 static inline long call4(long n, long a, long b, long c, long d) {
@@ -167,6 +169,7 @@ enum {
   N_rename = 329,
   N_getrandom = 384,
   N_statx = 397,
+  N_clock_adjtime = 405, /* clock_adjtime64 */
   N_mprotect = 125
 };
 static inline long call4(long n, long a, long b, long c, long d) {
@@ -287,6 +290,15 @@ static u64 clock_ns(int which) {
     return 0;
   return (u64)t.sec * 1000000000ULL + (u64)t.nsec;
 }
+#ifndef QUECTOP_CLOCK_SYNCHRONIZED
+/* Whether NTP has synchronized the wall clock: clock_adjtime returns
+ * TIME_ERROR (5) while the kernel marks the clock unsynchronized. */
+static int clock_synchronized(void) {
+  u64 timex[32] = {0}; /* struct __kernel_timex; modes 0 only reads */
+  long state = call4(N_clock_adjtime, 0, (long)timex, 0, 0);
+  return state >= 0 && state != 5;
+}
+#endif
 static void sleep_until(u64 ns) {
   struct timespec t = {ns / 1000000000ULL, ns % 1000000000ULL};
   while (call4(N_sleep, 1, 1, (long)&t, 0) == -4) {

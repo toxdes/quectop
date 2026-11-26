@@ -6,12 +6,24 @@ The dashboard is `index.html`, `style.css`, and `app.js` in the hub's data direc
 
 The dashboard reads these files, in order:
 
-1. `hosts.txt`, to list the hosts. A host picker appears when the file lists more than one host. The URL hash holds the selected host ID.
+1. `hosts.txt`, on every poll, to list the hosts and their connection state. A host picker appears when the file lists more than one host. The URL hash holds the selected host ID.
 2. `h/ID/live.v1.bin`, every 15 s while the tab is visible. Polling stops while the tab is hidden.
 3. The history file of the selected range, when the live snapshot reports a new committed window.
 4. `h/ID/disks.v1.bin`, when the live snapshot reports a new capacity snapshot.
 
 Every request uses `cache: 'no-cache'` and times out after 10 s. The dashboard decodes only schema v1. Any other version shows an error.
+
+## Status line
+
+The status line under the host name shows the device uptime and one of these states:
+
+| State | Condition |
+| --- | --- |
+| `connected` | `hosts.txt` marks the device as connected. |
+| `offline` | `hosts.txt` marks the device as not connected. |
+| `no new data for` a duration | The device is connected, but the live snapshot has not changed for longer than the greater of 90 s, 3 × the sampling interval, and 3 × the publication interval. |
+
+The duration is measured with the browser clock only, so a wrong device clock does not affect the state.
 
 ## Summary tiles
 
