@@ -70,6 +70,8 @@ If the device does not appear, read the hub's stderr. The hub logs every rejecte
 | --- | --- |
 | `rejected device web1: not in the keys file, or wrong key` | Check that the hub's keys file has a `web1` line. If it does, copy that line to the device again. |
 | `rejected device` followed by 32 hex digits | That ID is a machine ID, so the probe runs without `--key-file`. Add `--key-file`. |
+| `rejected device web1: protocol version 4; this hub accepts 3; upgrade the hub` | The probe is newer than the hub. Upgrade the hub. |
+| `rejected device web1: protocol version 2; this hub accepts 3; upgrade the device` | The probe is older than the hub supports. Upgrade the probe. |
 | `keys file is readable by other users; run chmod 600 on it` | Run `chmod 600` on the keys file. |
 
 ## Remove a device

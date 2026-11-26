@@ -2,7 +2,9 @@
 
 The probe streams to the hub over one TCP connection. All integers are little-endian. `protocol.h` defines the constants, `noise.h` the handshake, `uplink.h` the probe side, and `hub/intake.h` the hub side.
 
-Probes and hubs that use different protocol versions cannot connect. Upgrade them together.
+The hub accepts a probe whose protocol version is between its oldest supported version and its own version. This hub supports only version 3. The hub rejects other versions and logs which program to upgrade. The probe then keeps its history locally, retries, and sends the missing data once both versions match.
+
+The data formats work the same way, but each hub currently supports only format version 1.
 
 ## Messages
 
@@ -71,6 +73,8 @@ A frame is a `u8` type, a `u24` payload length, and the payload. A frame is at m
 
 Tiers 0–4 are `1h`, `1d`, `7d`, `30d`, and `90d`.
 
+The hub ignores a frame of any other type, so a new optional frame type needs no new protocol version. A change to an existing frame needs one. The probe closes the connection on any frame after RESUME, so the hub must not send a new frame type to a probe of an older version.
+
 ## Stream order
 
 After the handshake, the two sides do these steps:
@@ -92,7 +96,7 @@ The hub closes the connection when it receives any of these messages:
 
 - A frame that does not decrypt.
 - A frame whose length does not match its header.
-- An unexpected frame type.
+- A RESUME frame.
 - A bad header or checksum in the payload.
 
 ## Conformance

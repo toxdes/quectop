@@ -53,11 +53,6 @@ static void accept_client(long listener) {
   call4(N_close, fd, 0, 0, 0);
 }
 
-static char *append(char *p, const char *s) {
-  while (*s)
-    *p++ = *s++;
-  return p;
-}
 static void respond(struct client *c, const char *status, const char *type,
                     u32 bytes, int head_only) {
   char *p = append(c->buffer, "HTTP/1.1 ");

@@ -396,6 +396,10 @@ def check_protocol(hub, ring_headers):
     damaged[5] ^= 1
     second.send(4, b'\x00' + bytes(damaged))
     assert closed(second.sock), 'damaged record accepted'
+    second, _ = session()  # an unknown frame type is skipped, not refused
+    second.send(9, b'future')
+    second.send(4, b'\x00' + bytes(record))
+    assert not closed_soon(second.sock), 'unknown frame type closed the stream'
     third, _ = session()  # a valid record whose frame header lies about its length
     lying = bytearray(frame(4, b'\x00' + bytes(record)))
     lying[1] += 1
@@ -404,7 +408,7 @@ def check_protocol(hub, ring_headers):
     # Refused before or during the handshake.
     for identity, name, version in ((b'../escape', b'python', 3), (b'.hidden', b'python', 3),
                                     (b'bad\tname', b'x', 3), (b'ok', b'tab\there', 3),
-                                    (b'old-version', b'python', 2)):
+                                    (b'old-version', b'python', 2), (b'new-version', b'python', 4)):
         probe = Probe(hub.probes, identity, name=name, version=version)
         assert not probe.handshake() and closed(probe.sock), identity
     for raw in (message(b'QTOP\x03'), message(opening(b'short')) + message(bytes(47))):
@@ -418,7 +422,7 @@ def check_protocol(hub, ring_headers):
         attack(probe)
         assert closed(probe.sock)
     refused(lambda a: a.send(4, b'\x00'))
-    refused(lambda a: a.send(9, b''))
+    refused(lambda a: a.send(3, bytes(20)))  # RESUME runs hub to probe only
     refused(lambda a: a.sock.sendall(message(bytes(40))))  # not sealed
     refused(lambda a: a.sock.sendall(message(a.noise.encrypt(b'\x02\x09\x00\x00' + bytes(8)))))  # length lies
     def reordered(probe):
@@ -430,6 +434,12 @@ def check_protocol(hub, ring_headers):
         sealed[7] ^= 1
         probe.sock.sendall(message(bytes(sealed)))
     refused(tampered)
+    newer = bytearray(ring_headers[0])
+    newer[8:12] = struct.pack('<I', 2)
+    refused(lambda a: a.send(2, b'\x00' + bytes(newer)))
+    live_probe, _ = session()
+    live_probe.send(5, b'QUECTOPL' + struct.pack('<I', 2) + bytes(140))
+    assert closed(live_probe.sock), 'newer live format accepted'
     assert not (hub.directory / '..' / 'escape').exists()
     assert [row[0] for row in hub.hosts()].count('python-probe') == 1
 
@@ -550,6 +560,12 @@ def main():
         check_protocol(hub, ring_headers)
         hub.alive()
         hub.stop()
+        log = hub.process.stderr.read().decode()
+        for line in ('old-version: protocol version 2; this hub accepts 3; upgrade the device',
+                     'new-version: protocol version 4; this hub accepts 3; upgrade the hub',
+                     'python-probe: history format version 2; this hub accepts 1; upgrade the hub',
+                     'python-probe: live format version 2; this hub accepts 1; upgrade the hub'):
+            assert f'quectop-hub: rejected device {line}\n' in log, (line, log)
         # Without --http the hub only maintains files; hosts.txt survives restarts.
         restarted = Hub(hub_command, hub.directory, http=False)
         restarted.start()

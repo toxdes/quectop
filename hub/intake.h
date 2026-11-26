@@ -7,6 +7,14 @@
 #define PROBE_MAPPING (sizeof(struct greeting) + PROBE_BUFFER)
 #define RING_MAX_BYTES (256u << 20)
 #define HELLO_TIMEOUT_MS 10000 /* frees slots held by unproven connections */
+/* Oldest probe versions this hub handles. Raise one when its handling goes. */
+#define PROTOCOL_OLDEST 3
+#define SCHEMA_OLDEST 1
+#define DISK_SCHEMA_OLDEST 1
+_Static_assert(SCHEMA_OLDEST == QUECTOP_SCHEMA_VERSION &&
+                   DISK_SCHEMA_OLDEST == QUECTOP_DISK_SCHEMA_VERSION,
+               "an older data format needs its own replica names and decoding "
+               "in web/codec.js");
 
 struct ring {
   long fd;
@@ -70,27 +78,48 @@ static void accept_probe(long listener) {
   call4(N_close, fd, 0, 0, 0);
 }
 
-static void log_rejected(const char *id, u32 id_bytes) {
-  char line[64 + HOST_ID_MAX];
-  static const char head[] = PROGRAM_NAME ": rejected device ",
-                    tail[] = ": not in the keys file, or wrong key\n";
-  memcpy(line, head, sizeof(head) - 1);
-  memcpy(line + sizeof(head) - 1, id, id_bytes);
-  memcpy(line + sizeof(head) - 1 + id_bytes, tail, sizeof(tail) - 1);
-  write_all(2, line, sizeof(head) + sizeof(tail) - 2 + id_bytes);
+static char *append(char *p, const char *s) {
+  while (*s)
+    *p++ = *s++;
+  return p;
 }
+static void log_rejected(const struct greeting *g, const char *reason) {
+  char line[160 + HOST_ID_MAX], *p = append(line, PROGRAM_NAME ": rejected device ");
+  memcpy(p, g->id, g->id_bytes);
+  p = append(p + g->id_bytes, reason);
+  *p++ = '\n';
+  write_all(2, line, (unsigned long)(p - line));
+}
+/* Accepts a version in [oldest, newest]; logs which side needs an upgrade. */
+static int supported(const struct greeting *g, const char *what, u32 version,
+                     u32 oldest, u32 newest) {
+  if (version >= oldest && version <= newest)
+    return 1;
+  char reason[128], *p = append(reason, ": ");
+  p = decimal(append(p, what), version);
+  p = decimal(append(p, "; this hub accepts "), oldest);
+  if (oldest != newest)
+    p = decimal(append(p, " to "), newest);
+  p = append(p, version > newest ? "; upgrade the hub" : "; upgrade the device");
+  *p = 0;
+  log_rejected(g, reason);
+  return 0;
+}
+static const char key_rejected[] = ": not in the keys file, or wrong key";
 /* OPEN: "QTOP", version, id; the id picks the key for the handshake. */
 static int on_open(struct probe *a, const u8 *p, u32 bytes) {
   struct greeting *g = a->greeting;
   u32 id_bytes = bytes > 5 ? p[5] : 0;
   u8 key[KEY_BYTES];
   if (bytes != 6 + id_bytes || p[0] != 'Q' || p[1] != 'T' || p[2] != 'O' ||
-      p[3] != 'P' || p[4] != PROTOCOL_VERSION || !valid_id((const char *)p + 6, id_bytes))
+      p[3] != 'P' || !valid_id((const char *)p + 6, id_bytes))
     return 0;
   memcpy(g->id, p + 6, id_bytes);
   g->id_bytes = (u8)id_bytes;
+  if (!supported(g, "protocol version ", p[4], PROTOCOL_OLDEST, PROTOCOL_VERSION))
+    return 0;
   if (!device_key(g->id, id_bytes, key)) {
-    log_rejected(g->id, id_bytes);
+    log_rejected(g, key_rejected);
     return 0;
   }
   noise_start(&g->handshake, p, bytes, key);
@@ -105,7 +134,7 @@ static int on_handshake(struct probe *a, u8 *p, u32 bytes) {
   const u8 *payload = p + NOISE_KEY;
   u32 name_bytes = got >= 5 ? payload[4] : 0;
   if (got < 0) {
-    log_rejected(g->id, g->id_bytes);
+    log_rejected(g, key_rejected);
     return 0;
   }
   if ((u32)got != 5 + name_bytes || !valid_name((const char *)payload + 5, name_bytes))
@@ -169,7 +198,9 @@ static int on_ring(struct probe *a, const u8 *p, u32 bytes) {
   u32 header_bytes = bytes - 1;
   if (!a->host || tier >= TIERS || (a->rings >> tier & 1) ||
       header_bytes < HEADER_BYTES || !prefix((const char *)h, "QUECTOPH") ||
-      load_le32(h + 8) != QUECTOP_SCHEMA_VERSION || load_le32(h + 32) != tier ||
+      !supported(a->greeting, "history format version ", load_le32(h + 8),
+                 SCHEMA_OLDEST, QUECTOP_SCHEMA_VERSION) ||
+      load_le32(h + 32) != tier ||
       load_le32(h + 44) != header_bytes ||
       load_le32(h + 60) != hash_more(hash(h, HEADER_BYTES - 4),
                                      h + HEADER_BYTES, header_bytes - HEADER_BYTES))
@@ -234,7 +265,10 @@ static int on_snapshot(struct probe *a, u8 type, const u8 *p, u32 bytes) {
   int live = type == FRAME_LIVE;
   if (a->rings != (1 << TIERS) - 1 || bytes < (live ? LIVE_HEADER_BYTES : 28) + 4 ||
       !prefix((const char *)p, live ? "QUECTOPL" : "QUECTOPD") ||
-      load_le32(p + 8) != (live ? QUECTOP_SCHEMA_VERSION : QUECTOP_DISK_SCHEMA_VERSION) ||
+      !(live ? supported(a->greeting, "live format version ", load_le32(p + 8),
+                         SCHEMA_OLDEST, QUECTOP_SCHEMA_VERSION)
+             : supported(a->greeting, "disk format version ", load_le32(p + 8),
+                         DISK_SCHEMA_OLDEST, QUECTOP_DISK_SCHEMA_VERSION)) ||
       load_le32(p + bytes - 4) != hash(p, bytes - 4))
     return 0;
   if (live)
@@ -252,8 +286,10 @@ static int on_frame(struct probe *a, u8 type, const u8 *p, u32 bytes) {
   case FRAME_LIVE:
   case FRAME_DISKS:
     return on_snapshot(a, type, p, bytes);
-  default:
+  case FRAME_RESUME:
     return 0;
+  default: /* a newer probe's optional frame */
+    return 1;
   }
 }
 static int on_message(struct probe *a, u8 *m, u32 bytes) {
