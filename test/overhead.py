@@ -33,6 +33,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     flags = next(line.split("=", 1)[1] for line in (ROOT / "Makefile").read_text().splitlines()
                  if line.startswith("CFLAGS ="))
+    version = (ROOT / "VERSION").read_text().strip()
     targets = {
         "amd64": ["cc"],
         "arm64": ["clang", "--target=aarch64-linux-gnu"],
@@ -40,7 +41,7 @@ def main() -> None:
     }
     for name, compiler in targets.items():
         assembly = args.output_dir / (name + ".s")
-        command = compiler + shlex.split(flags) + ["-S", "main.c", "-o", str(assembly)]
+        command = compiler + shlex.split(flags) + [f'-DQUECTOP_VERSION="{version}"', "-S", "main.c", "-o", str(assembly)]
         with (args.output_dir / (name + ".log")).open("w") as log:
             subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=True)
         check_assembly(assembly)

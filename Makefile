@@ -1,6 +1,8 @@
 CC = cc
 BUN = bun
 PYTHON = python3
+VERSION := $(shell cat VERSION)
+VERSION_CPPFLAGS = -DQUECTOP_VERSION='"$(VERSION)"'
 CFLAGS = -Os -std=c11 -Wall -Wextra -Werror -ffreestanding -fno-builtin -fstack-protector-strong -mstack-protector-guard=global -fno-unwind-tables -fno-asynchronous-unwind-tables -fpie -ffunction-sections -fdata-sections
 LDFLAGS = -nostdlib -static-pie -Wl,-z,text,-z,relro,--gc-sections,--build-id=none,-z,noexecstack,-s
 COMPILER_ARCH := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
@@ -18,7 +20,7 @@ HUB_SOURCES = hub/main.c hub/assets.S boot.c arm.c start.S $(CRYPTO_SOURCES)
 # Shared runtime helpers the hub does not call are dropped by --gc-sections.
 HUB_CFLAGS = $(CFLAGS) -Wno-unused-function
 
-.PHONY: all clean release
+.PHONY: all clean release release-packages
 all: quectop quectop-hub
 
 .build/assets.h: Makefile scripts/assets.py $(wildcard web/*) $(wildcard web/icons/*)
@@ -27,11 +29,11 @@ all: quectop quectop-hub
 	$(BUN) build web/style.css --minify --outfile .build/style.css
 	$(PYTHON) scripts/assets.py prepare .build
 
-quectop: Makefile main.c $(wildcard *.h) boot.c arm.c start.S $(CRYPTO_SOURCES) $(wildcard vendor/monocypher/*.h)
-	$(CC) $(CFLAGS) $(ARCHFLAGS) main.c boot.c arm.c start.S $(CRYPTO_SOURCES) $(LDFLAGS) $(ARCHLDFLAGS) -o $@
+quectop: Makefile VERSION main.c $(wildcard *.h) boot.c arm.c start.S $(CRYPTO_SOURCES) $(wildcard vendor/monocypher/*.h)
+	$(CC) $(VERSION_CPPFLAGS) $(CFLAGS) $(ARCHFLAGS) main.c boot.c arm.c start.S $(CRYPTO_SOURCES) $(LDFLAGS) $(ARCHLDFLAGS) -o $@
 
-quectop-hub: $(HUB_SOURCES) $(wildcard hub/*.h) $(wildcard *.h) $(wildcard vendor/monocypher/*.h) .build/assets.h
-	$(CC) $(HUB_CFLAGS) $(ARCHFLAGS) $(HUB_SOURCES) $(LDFLAGS) $(ARCHLDFLAGS) -o $@
+quectop-hub: VERSION $(HUB_SOURCES) $(wildcard hub/*.h) $(wildcard *.h) $(wildcard vendor/monocypher/*.h) .build/assets.h
+	$(CC) $(VERSION_CPPFLAGS) $(HUB_CFLAGS) $(ARCHFLAGS) $(HUB_SOURCES) $(LDFLAGS) $(ARCHLDFLAGS) -o $@
 
 clean:
 	rm -f quectop quectop-hub
@@ -44,3 +46,9 @@ release: quectop quectop-hub
 	  mv -f dist/quectop-$(TARGET)/.$$binary.new dist/quectop-$(TARGET)/$$binary || exit 1; \
 	done
 	tar -czf dist/quectop-$(TARGET).tar.gz -C dist quectop-$(TARGET)/quectop quectop-$(TARGET)/quectop-hub
+
+release-packages:
+	./yesb/build_all.py
+	mkdir -p dist/packages/hub/dist
+	cp VERSION packaging/hub/release.toml packaging/hub/PKGBUILD* dist/packages/hub/
+	cp dist/packages/quectop-hub[-_]* dist/packages/hub/dist/

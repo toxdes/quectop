@@ -1,5 +1,6 @@
 /* Exercise kernel ABI and compiler integer helpers without libc. */
 #define entry probe_entry
+#define QUECTOP_VERSION "test"
 #include "../main.c"
 #undef entry
 

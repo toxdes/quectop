@@ -70,6 +70,8 @@ To stop either program, press Ctrl+C. Both programs keep their data in `~/.local
 | [How-to guides](docs/how-to/README.md) | Procedures for specific tasks |
 | [Reference](docs/reference/README.md) | Options, files, and protocol messages |
 | [Architecture](docs/architecture.md) | Design of quectop and the reasons for it |
+| [Changelog](CHANGELOG.md) | Changes by release |
+| [Publish a release](docs/how-to/publish-a-release.md) | Build, check, and publish packages |
 
 ## Limitations
 

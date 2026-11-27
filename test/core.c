@@ -6,6 +6,7 @@
 #define QUECTOP_CLOCK_SYNCHRONIZED
 static int test_synchronized;
 static int clock_synchronized(void) { return test_synchronized; }
+#define QUECTOP_VERSION "test"
 #include "../main.c"
 #ifdef QUECTOP_TEST_FREESTANDING
 #undef entry

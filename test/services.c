@@ -1,6 +1,7 @@
 #ifdef QUECTOP_TEST_FREESTANDING
 #define entry probe_entry
 #endif
+#define QUECTOP_VERSION "test"
 #include "../main.c"
 #ifdef QUECTOP_TEST_FREESTANDING
 #undef entry
