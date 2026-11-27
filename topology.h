@@ -26,7 +26,7 @@ static void memory_layout(void) {
       reserve((unsigned long)pending_capacity * tiers[0].record_bytes);
   for (u32 i = 0; i < TIERS; ++i) {
     struct accumulator *a = &tiers[i].active;
-    a->sum = reserve((unsigned long)metrics * sizeof(*a->sum));
+    a->sum = reserve(sum_bytes());
     a->count = reserve((unsigned long)metrics * sizeof(*a->count));
     a->peak = reserve((unsigned long)metrics * sizeof(*a->peak));
     a->low = reserve((unsigned long)low_count * sizeof(u16));
@@ -90,14 +90,9 @@ static void initialize_topology(void) {
   disk_capacity = measure_disks(&disk_slots);
   for (u32 i = 0; i < TIERS; ++i) {
     struct tier *t = &tiers[i];
-    t->width = (spans[i] + points - 2) / (points - 1);
-    if (i == 0 && t->width < (interval + 999) / 1000)
-      t->width = (interval + 999) / 1000;
+    t->width = history_width(points, interval, i);
     t->offset_bits = (u8)bits_needed(t->width - 1);
-    t->record_bytes = (32 + metrics + 2 * value_bits + low_bits +
-                       metrics * t->offset_bits + 7) /
-                          8 +
-                      4;
+    t->record_bytes = bucket_bytes(metrics, value_bits, low_bits, t->offset_bits);
     if (t->record_bytes > max_record)
       max_record = t->record_bytes;
     live_capacity += t->record_bytes;

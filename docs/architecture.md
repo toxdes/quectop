@@ -137,8 +137,9 @@ Every connection uses the [Noise](https://noiseprotocol.org/) handshake `Noise_N
 | `uplink.h`, `resolve.h` | Hub connection and name lookup |
 | `protocol.h`, `noise.h`, `auth.h` | Wire format, handshake, and key lines |
 | `hub/` | The hub |
-| `web/` | The dashboard. `web/codec.js` decodes the data files. |
+| `web/` | The dashboard. `codec.js` decodes the data files, `tiles.js` renders one metric of one device, and `app.js` loads devices and manages views and boards. |
 | `linux.h`, `runtime.h`, `net.h`, `lines.h`, `datadir.h` | System calls and shared helpers |
 | `start.S`, `boot.c`, `arm.c` | Process startup and ARMv6 integer helpers |
+| `web/icons/` | [Tabler Icons](https://tabler.io/icons) 3.53.0, MIT license. Reduced to their drawing paths and inlined at build time. |
 | `vendor/monocypher/` | Cryptographic library, unmodified |
 | `test/` | Tests. See [Run the tests](how-to/run-the-tests.md). |

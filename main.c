@@ -1,7 +1,6 @@
 #include "linux.h"
 #define PROGRAM_NAME "quectop"
 #define TEMP_BIAS 2048
-#define PENDING_BYTES 1024
 #include "protocol.h"
 
 static u32 interval = 5000, publish = 30000, points = 1000;
@@ -12,6 +11,7 @@ static void uplink_live(u32 bytes);
 static void uplink_disks(void);
 
 #include "runtime.h"
+#include "layout.h"
 #include "net.h"
 #include "proc.h"
 #include "metrics.h"
@@ -49,9 +49,9 @@ void entry(long *stack) {
       fail("option requires a value; see --help");
     const char *v = argv[i];
     if (equal(arg, "--interval-ms"))
-      interval = option_number(v, 100, 3600000);
+      interval = option_number(v, 100, OPTION_MAX_MS);
     else if (equal(arg, "--publish-ms"))
-      publish = option_number(v, 100, 3600000);
+      publish = option_number(v, 100, OPTION_MAX_MS);
     else if (equal(arg, "--disk-refresh-ms"))
       disk_refresh_ms = option_number(v, 1000, 3600000);
     else if (equal(arg, "--points"))
@@ -84,6 +84,8 @@ void entry(long *stack) {
     else
       fail("unknown option; see --help");
   }
+  if (hub_state && !key_file && !hub_name_bytes && hub_endpoint.address[0] != 127)
+    fail("--hub outside loopback needs --key-file");
   measure_services(argv + argc + 1);
 #if defined(__arm__)
   if (!clock_ns(1))

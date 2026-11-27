@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 from pathlib import Path
+import re
 import struct
 
 
@@ -12,14 +13,16 @@ NAMES = ("style.css", "app.js", "index.html")
 
 
 def prepare(directory: Path) -> None:
-    """Hash the exact served bytes and generate the hub's revision header."""
-    assets = [
-        (directory / name if name == "app.js" else ROOT / "web" / name).read_bytes()
-        for name in NAMES
-    ]
-    for name, data in zip(NAMES, assets):
-        if name != "app.js":
-            (directory / name).write_bytes(data)
+    """Hash the exact served bytes and generate the hub's revision header.
+
+    Bun has already minified app.js and style.css into the directory. The page
+    gets its icons inlined and loses the whitespace between its tags.
+    """
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    page = re.sub(r"<!--icon:([a-z-]+)-->",
+                  lambda m: (ROOT / "web" / "icons" / f"{m[1]}.svg").read_text(encoding="utf-8").strip(), page)
+    (directory / "index.html").write_text(re.sub(r">\s+<", "><", page).strip() + "\n", encoding="utf-8")
+    assets = [(directory / name).read_bytes() for name in NAMES]
     digest = hashlib.sha256()
     for name, data in zip(NAMES, assets):
         digest.update(name.encode("ascii") + b"\0")

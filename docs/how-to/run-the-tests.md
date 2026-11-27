@@ -49,4 +49,20 @@ uv run test/resolve.py
 	uv run test/hub.py --probe 'qemu-aarch64 dist/quectop-linux-arm64/quectop' --hub 'qemu-aarch64 dist/quectop-linux-arm64/quectop-hub'
 	```
 
-QEMU uses the host's kernel. The tests check ARM code, but they do not measure speed on real ARM hardware.
+## Test release startup
+
+Run `test/startup.py` on the two binaries produced by `make release` for each target. Run the AMD64 check on an AMD64 host. The ARM checks use user-mode QEMU when the host architecture differs.
+
+```sh
+python3 test/startup.py --target amd64 dist/quectop-linux-amd64
+python3 test/startup.py --target arm64 dist/quectop-linux-arm64
+python3 test/startup.py --target armv6 dist/quectop-linux-armv6
+```
+
+To test ARM64 kernel page sizes, boot Linux with 4, 16, and 64 KiB pages in turn. You can use `qemu-system-aarch64` with an ARM64 kernel for each size. Run the check from inside each guest with Python 3, `readelf`, `/proc`, and loopback networking available. For example, on the 16 KiB guest:
+
+```sh
+python3 test/startup.py --target arm64 --page-size 16384 /path/to/quectop-linux-arm64
+```
+
+Pass `4096` and `65536` on the other two guests. The test verifies the kernel page size, checks that the probe publishes to the hub, and checks both processes' RELRO and writable mappings.

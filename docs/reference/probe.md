@@ -75,8 +75,9 @@ With `--hub`, the probe also streams its files to the hub. The probe's own files
 - The probe resolves `HOST` again before every connection. It reads `/etc/hosts` first. It then sends an A query over UDP to each IPv4 `nameserver` in `/etc/resolv.conf`, with a 3 s timeout for each one. With no nameserver listed, it uses `127.0.0.1`. The probe does not support search domains, mDNS, or IPv6.
 - `--hub` rejects a URL. Write `hub.example.com:7070`, not `http://hub.example.com:7070`.
 - After a failed or lost connection, the probe retries after 1 s. Each failure doubles the delay, up to 60 s.
-- When the hub acknowledges no data for 3 × `--publish-ms` + 60 s, the probe closes the connection (`TCP_USER_TIMEOUT`). This limit matches the hub's idle limit.
-- After each connection, the probe sends the history buckets that the hub is missing, oldest first.
+- The connection and handshake each have a 10 s deadline. The probe waits up to 60 s for RESUME.
+- The probe sets `TCP_USER_TIMEOUT` to 3 × the effective publication period + 60 s. The hub uses the same idle limit. The effective period is `--publish-ms` rounded up to a multiple of `--interval-ms`.
+- After each connection, the probe sends missing history buckets oldest first. If the hub reports a bucket from the future after a clock correction, the probe resends its retained window.
 - Data waits in a 32 KiB outbox. When the outbox is full, the probe drops the connection, and the next connection resumes the stream. A snapshot that does not fit in the outbox is skipped until the next one.
 - The [hub protocol reference](protocol.md) describes the wire format.
 
@@ -92,8 +93,8 @@ The hub files each host under an ID:
 
 The key file holds one line, `NAME HEX`, where `HEX` is 64 hex digits (32 bytes).
 
-- The probe refuses a key file that other users can read. Fix it with `chmod 600 FILE`.
-- Without `--key-file`, the probe uses an all-zero key. Only a hub that listens on `127.0.0.0/8` and has no keys file accepts that key.
+- The probe requires a private regular file. Use `chmod 600 FILE` to restrict its permissions.
+- The probe permits a zero key only for resolved addresses in `127.0.0.0/8`. All other destinations require a nonzero key from `--key-file`.
 
 ## Services
 
@@ -133,6 +134,8 @@ The probe reports these values for each service:
 - The probe counts at most 256 processes and walks at most 16 cgroup levels for each service.
 - All service queries in one publication share a 100 ms budget, and the first service rotates between publications.
 - One `smaps_rollup` read in the kernel can exceed the budget.
+
+The probe checks each process's cgroup before and after reading its memory. A mismatch makes the mapped totals unavailable. Processes can still move between checks, so totals are best-effort snapshots.
 
 The probe starts no helper processes and changes no accounting settings. It never controls services.
 

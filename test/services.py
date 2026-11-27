@@ -113,9 +113,21 @@ def main() -> None:
         write(root, "cgroup/openrc.worker/children/cgroup.procs", "102\n103\n")
         for pid in (101, 102, 103, 104):
             write(root, f"proc/{pid}/stat", f"{pid} (worker ) name) S " + "0 " * 18 + "100\n")
+        for pid, group in ((101, "openrc.worker"), (102, "openrc.worker"),
+                           (103, "openrc.worker/children"), (104, "openrc.denied"),
+                           (105, "openrc.reused-other")):
+            write(root, f"proc/{pid}/cgroup", f"0::/{group}\n")
         rollup = ("Rss: 400 kB\nPss: 300 kB\nPrivate_Clean: 50 kB\n"
                   "Private_Dirty: 150 kB\nPss_Anon: 150 kB\nPss_File: 100 kB\nPss_Shmem: 50 kB\n")
         for pid in (101, 102, 103):
+            write(root, f"proc/{pid}/smaps_rollup", rollup)
+        write(root, "cgroup/openrc.reused/cgroup.procs", "105\n")
+        write(root, "proc/105/smaps_rollup", rollup)
+        write(root, "cgroup/unified/openrc.hybrid/cgroup.procs", "106\n")
+        write(root, "proc/106/cgroup", "0::/openrc.hybrid\n")
+        write(root, "cgroup/openrc/legacy/cgroup.procs", "107\n")
+        write(root, "proc/107/cgroup", "3:name=openrc:/legacy\n0::/other\n")
+        for pid in (106, 107):
             write(root, f"proc/{pid}/smaps_rollup", rollup)
         write(root, "cgroup/openrc.denied/cgroup.procs", "104\n")
         write(root, "proc/104/status", "Name:\tworker\nVmRSS:\t123 kB\n")

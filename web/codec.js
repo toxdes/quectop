@@ -2,6 +2,7 @@ export const schemaVersion=1,diskSchemaVersion=1;
 export const spans=[3600,86400,604800,2592000,7776000];
 export const files=['1h','1d','7d','30d','90d'].map(name=>name+'.v'+schemaVersion+'.bin');
 export const liveFile='live.v'+schemaVersion+'.bin',disksFile='disks.v'+diskSchemaVersion+'.bin';
+export const maxSnapshotBytes=65535-16-4;
 export let skipped=0;
 
 function magic(d,value) {
@@ -26,8 +27,7 @@ function reader(d,at) {
 /* Metric order matches the probe; metrics from memory to network keep bucket minimums. */
 function layout(cores,frequencies,frequencyBits,interfaces) {
   const c=cores,temp=c+9,frequency=c+10,network=frequency+frequencies;
-  const bits=Array(temp).fill(10).concat(12,Array(frequencies).fill(frequencyBits),Array(interfaces*2).fill(14));
-  return {cores,bits,valid:new Uint8Array(bits.length),metrics:bits.length,valueBits:10*temp+12+frequencies*frequencyBits+28*interfaces,
+  return {cores,metrics:network+2*interfaces,valueBits:10*temp+12+frequencies*frequencyBits+28*interfaces,
     lowBits:32+frequencies*frequencyBits,overall:c,user:c+1,system:c+2,iowait:c+3,pressure:c+4,memory:c+7,swap:c+8,temp,frequency,network};
 }
 function unpackValues(read,valid,format,from=0,to=format.metrics) {
@@ -138,6 +138,8 @@ export function decodeLive(buffer) {
   const sizes=widths.map(width=>recordBytes(width,format)),pendingCount=d.getUint32(104,true),serviceCount=d.getUint32(132,true);
   const capacity=Math.max(1,Math.floor(1024/sizes[0]));
   if(serviceCount>65535||pendingCount>capacity||d.byteLength<149+metadataBytes+latestBytes+sizes.reduce((a,b)=>a+b,0)+pendingCount*sizes[0])throw Error('Incomplete '+liveFile);
+  format.bits=Array(format.temp).fill(10).concat(12,Array(frequencies).fill(frequencyBits),Array(interfaces*2).fill(14));
+  format.valid=new Uint8Array(format.metrics);
   const ids=reader(d,144),cpuIds=Array.from({length:cores},()=>ids(idBits));
   if(cpuIds.some((id,i)=>i&&id<=cpuIds[i-1]))throw Error('Invalid CPU IDs');
   const frequencyIds=[],frequencyHardware=[];
@@ -167,9 +169,12 @@ export function decodeLive(buffer) {
     generated:Number(d.getBigUint64(24,true)),uptime:Number(d.getBigUint64(32,true)),memory:Number(d.getBigUint64(40,true)),latestTime:d.getUint32(48,true)*1000,
     swap:Number(d.getBigUint64(112,true)),disksGenerated:Number(d.getBigUint64(136,true))};
 }
+export function historyLength(next,index) {
+  return 64+next.metadataBytes+(next.points-1)*next.sizes[index];
+}
 export function decodeHistory(buffer,index,next) {
   const d=new DataView(buffer),bytes=next.sizes[index],width=next.widths[index],header=64+next.metadataBytes;
-  if(d.byteLength!==header+(next.points-1)*bytes||!magic(d,'QUECTOPH')||d.getUint32(8,true)!==schemaVersion||d.getUint32(12,true)!==next.points||d.getUint32(16,true)!==spans[index]||d.getUint32(20,true)!==width||d.getUint32(24,true)!==next.interval||d.getUint32(28,true)!==bytes||d.getUint32(32,true)!==index||d.getUint32(36,true)!==next.cores||d.getUint32(40,true)!==next.format.metrics||d.getUint32(44,true)!==header||d.getUint32(48,true)!==next.idBits||d.getUint32(52,true)!==next.interfaces||d.getUint16(56,true)!==next.frequencies||d.getUint8(58)!==next.frequencyBits||d.getUint8(59)!==0)throw Error('History configuration mismatch');
+  if(d.byteLength!==historyLength(next,index)||!magic(d,'QUECTOPH')||d.getUint32(8,true)!==schemaVersion||d.getUint32(12,true)!==next.points||d.getUint32(16,true)!==spans[index]||d.getUint32(20,true)!==width||d.getUint32(24,true)!==next.interval||d.getUint32(28,true)!==bytes||d.getUint32(32,true)!==index||d.getUint32(36,true)!==next.cores||d.getUint32(40,true)!==next.format.metrics||d.getUint32(44,true)!==header||d.getUint32(48,true)!==next.idBits||d.getUint32(52,true)!==next.interfaces||d.getUint16(56,true)!==next.frequencies||d.getUint8(58)!==next.frequencyBits||d.getUint8(59)!==0)throw Error('History configuration mismatch');
   const raw=new Uint8Array(buffer);
   if(checksum(raw,64,next.metadataBytes,checksum(raw,0,60))!==d.getUint32(60,true))throw Error('Invalid history header');
   if(next.metadata.some((byte,i)=>byte!==raw[64+i]))throw Error('History device metadata mismatch');

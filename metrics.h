@@ -33,6 +33,7 @@ static u16 percentage(u64 used, u64 total) {
 }
 /* Internal network unit: 0.001 B/s. Wire: mantissa(10), decimals(2), SI
  * unit(2). */
+#define NETWORK_MILLI_MAX 999000000000000ULL
 static u16 network_pack(u64 milli) {
   u64 factor = 1000;
   u32 unit = 0;
@@ -57,7 +58,7 @@ static u16 network_pack(u64 milli) {
         return (u16)(mantissa | (decimals << 10) | (unit << 12));
     }
     if (unit == 3)
-      fail("network rate exceeds 999 GB/s format limit");
+      return 999 | (3 << 12);
     factor *= 1000;
     ++unit;
   }

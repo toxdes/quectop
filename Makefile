@@ -8,6 +8,10 @@ TARGET ?= linux-$(if $(filter arm armv% thumb%,$(COMPILER_ARCH)),armv6,$(patsubs
 ifeq ($(TARGET),linux-armv6)
 ARCHFLAGS = -march=armv6 -marm -mfloat-abi=soft
 endif
+ifeq ($(COMPILER_ARCH),aarch64)
+# Keep RELRO and writable data on separate pages even on 64 KiB kernels.
+ARCHLDFLAGS = -Wl,-z,max-page-size=65536,-z,common-page-size=65536
+endif
 
 CRYPTO_SOURCES = vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c
 HUB_SOURCES = hub/main.c hub/assets.S boot.c arm.c start.S $(CRYPTO_SOURCES)
@@ -17,16 +21,17 @@ HUB_CFLAGS = $(CFLAGS) -Wno-unused-function
 .PHONY: all clean release
 all: quectop quectop-hub
 
-.build/assets.h: Makefile scripts/assets.py web/index.html web/style.css web/app.js web/codec.js
+.build/assets.h: Makefile scripts/assets.py $(wildcard web/*) $(wildcard web/icons/*)
 	mkdir -p .build
 	$(BUN) build web/app.js --target browser --minify --banner '"use strict";' --outfile .build/app.js
+	$(BUN) build web/style.css --minify --outfile .build/style.css
 	$(PYTHON) scripts/assets.py prepare .build
 
-quectop: main.c $(wildcard *.h) boot.c arm.c start.S $(CRYPTO_SOURCES) $(wildcard vendor/monocypher/*.h)
-	$(CC) $(CFLAGS) $(ARCHFLAGS) main.c boot.c arm.c start.S $(CRYPTO_SOURCES) $(LDFLAGS) -o $@
+quectop: Makefile main.c $(wildcard *.h) boot.c arm.c start.S $(CRYPTO_SOURCES) $(wildcard vendor/monocypher/*.h)
+	$(CC) $(CFLAGS) $(ARCHFLAGS) main.c boot.c arm.c start.S $(CRYPTO_SOURCES) $(LDFLAGS) $(ARCHLDFLAGS) -o $@
 
 quectop-hub: $(HUB_SOURCES) $(wildcard hub/*.h) $(wildcard *.h) $(wildcard vendor/monocypher/*.h) .build/assets.h
-	$(CC) $(HUB_CFLAGS) $(ARCHFLAGS) $(HUB_SOURCES) $(LDFLAGS) -o $@
+	$(CC) $(HUB_CFLAGS) $(ARCHFLAGS) $(HUB_SOURCES) $(LDFLAGS) $(ARCHLDFLAGS) -o $@
 
 clean:
 	rm -f quectop quectop-hub

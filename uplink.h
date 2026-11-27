@@ -12,14 +12,15 @@
 #define HUB_RETRY_MIN_NS 1000000000ULL
 #define HUB_RETRY_MAX_NS 60000000000ULL
 #define HUB_RESOLVE_NS 3000000000ULL
+#define HUB_SETUP_NS 10000000000ULL
 enum { HUB_OFF, HUB_IDLE, HUB_RESOLVING, HUB_CONNECTING, HUB_GREETING,
        HUB_RESUMING, HUB_STREAMING };
 enum { OWE_LIVE = 1, OWE_DISKS = 2 };
 
 static struct endpoint hub_endpoint;
 static char hub_name[HOST_NAME_TEXT]; /* empty: hub_endpoint is literal */
-static u32 hub_name_bytes, hub_nameserver;
-static u16 hub_query;
+static u32 hub_name_bytes, hub_nameserver, hub_publication_ms;
+static u8 hub_has_secret, hub_key_warning;
 static long hub_fd = -1;
 static u8 hub_state, hub_owed, hub_received;
 /* Noise message 2, then the sealed RESUME. */
@@ -33,7 +34,7 @@ static u8 outbox[OUTBOX_BYTES];
 static u32 outbox_start, outbox_end, live_bytes;
 /* Next bucket start to send per tier; 0 once caught up. */
 static u32 hub_cursor[TIERS];
-/* Next connect attempt; while resolving, the lookup's deadline. */
+/* Next attempt when idle, or the current setup phase's deadline. */
 static u64 hub_retry_at, hub_backoff = HUB_RETRY_MIN_NS;
 static char host_id[HOST_ID_MAX];
 static u8 host_id_bytes;
@@ -42,10 +43,10 @@ static u8 device_key[KEY_BYTES]; /* zero without --key-file */
 
 /* The key file's "ID HEX" line sets both the host id and the key. */
 static void read_key_file(void) {
-  struct lines r = open_lines(key_file);
+  struct lines r = {.fd = openat(AT_CWD, key_file, RDONLY | NONBLOCK, 0)};
   check(r.fd, "cannot open --key-file");
   if (!private_file(r.fd))
-    fail("--key-file is readable by other users; run chmod 600 on it");
+    fail("--key-file must be a private regular file (mode 600)");
   const char *line, *id;
   u32 bytes, id_bytes = 0;
   while (next_line(&r, &line, &bytes) &&
@@ -56,6 +57,8 @@ static void read_key_file(void) {
     fail("--key-file needs an \"ID HEX\" line from quectop-hub --add-device");
   memcpy(host_id, id, id_bytes);
   host_id_bytes = (u8)id_bytes;
+  for (u32 i = 0; i < KEY_BYTES; ++i)
+    hub_has_secret |= device_key[i];
 }
 /* Host id: /etc/machine-id when present, otherwise the hostname. */
 static void read_host_id(void) {
@@ -141,6 +144,16 @@ static int parse_hub(const char *s) {
   return 1;
 }
 static void hub_open(void) {
+  if (!hub_has_secret && hub_endpoint.address[0] != 127) {
+    if (!hub_key_warning) {
+      static const char message[] = PROGRAM_NAME ": --hub outside loopback needs a nonzero device key (--key-file)\n";
+      call4(N_write, 2, (long)message, sizeof(message) - 1, 0);
+      hub_key_warning = 1;
+    }
+    hub_disconnect();
+    return;
+  }
+  hub_key_warning = 0;
   hub_fd = call4(N_socket, 2, SOCKET_STREAM, 0, 0);
   if (hub_fd < 0) {
     hub_disconnect();
@@ -151,15 +164,17 @@ static void hub_open(void) {
   /* TCP_USER_TIMEOUT: a hub that stops acknowledging, as on a lost route,
    * drops the stream after the hub's own idle limit instead of after the
    * kernel's retransmission limit of about 15 minutes. */
-  u32 unacknowledged_ms = 3 * publish + 60000;
+  u32 unacknowledged_ms = transport_timeout_ms(hub_publication_ms);
   call6(N_setsockopt, hub_fd, 6, 18, (long)&unacknowledged_ms,
         sizeof(unacknowledged_ms), 0);
   long result = call4(N_connect, hub_fd, (long)&hub_endpoint,
                       sizeof(hub_endpoint), 0);
   if (result < 0 && result != -115) /* EINPROGRESS */
     hub_disconnect();
-  else
+  else {
     hub_state = HUB_CONNECTING;
+    hub_retry_at = clock_ns(1) + HUB_SETUP_NS;
+  }
 }
 /* The next lookup asks the next nameserver. */
 static void hub_resolve_failed(void) {
@@ -174,12 +189,17 @@ static void hub_connect(void) {
   }
   struct endpoint server;
   nameserver(hub_nameserver, &server);
+  u16 query_id;
+  if (call4(N_getrandom, (long)&query_id, sizeof(query_id), 0, 0) != sizeof(query_id)) {
+    hub_resolve_failed();
+    return;
+  }
+  u8 *query = outbox + DNS_PACKET_BYTES + 1;
+  u32 n = dns_query(query, query_id, hub_name, hub_name_bytes);
   hub_fd = call4(N_socket, 2, SOCKET_DATAGRAM, 0, 0);
-  hub_query = (u16)(clock_ns(1) ^ clock_ns(0) >> 7);
-  u32 n = dns_query(outbox, hub_query, hub_name, hub_name_bytes);
   if (hub_fd < 0 ||
       call4(N_connect, hub_fd, (long)&server, sizeof(server), 0) < 0 ||
-      call6(N_send, hub_fd, (long)outbox, n, SEND_FLAGS, 0, 0) != (long)n) {
+      call6(N_send, hub_fd, (long)query, n, SEND_FLAGS, 0, 0) != (long)n) {
     hub_resolve_failed();
     return;
   }
@@ -187,14 +207,18 @@ static void hub_connect(void) {
   hub_retry_at = clock_ns(1) + HUB_RESOLVE_NS;
 }
 static void hub_resolved(void) {
-  long n = call4(N_read, hub_fd, (long)outbox, OUTBOX_BYTES, 0);
+  long n = call4(N_read, hub_fd, (long)outbox, DNS_PACKET_BYTES + 1, 0);
   if (n == -4 || n == -11)
     return;
-  if (n <= 0 || !dns_answer(outbox, (u32)n, hub_query, hub_endpoint.address)) {
+  if (n < 0) {
     hub_resolve_failed();
     return;
   }
+  if (!dns_answer(outbox, (u32)n, outbox + DNS_PACKET_BYTES + 1,
+                  hub_name_bytes + 2, hub_endpoint.address))
+    return;
   call4(N_close, hub_fd, 0, 0, 0);
+  hub_fd = -1;
   hub_open();
 }
 /* Once connected: OPEN, then Noise message 1 carrying publish ms and hostname. */
@@ -208,7 +232,7 @@ static void hub_greet(void) {
   outbox[0] = (u8)open_bytes;
   outbox[1] = 0;
   u8 payload[5 + sizeof(host_name)], *first = open + open_bytes;
-  store_le32(payload, publish);
+  store_le32(payload, hub_publication_ms);
   payload[4] = host_name_bytes;
   memcpy(payload + 5, host_name, host_name_bytes);
   noise_start(&hub_handshake, open, open_bytes, device_key);
@@ -224,6 +248,7 @@ static void hub_greet(void) {
   outbox_start = 0;
   outbox_end = MESSAGE_HEADER + open_bytes + MESSAGE_HEADER + n;
   hub_state = HUB_GREETING;
+  hub_retry_at = clock_ns(1) + HUB_SETUP_NS;
 }
 /* Noise message 2 proves the hub holds the key; only then do frames flow. */
 static void hub_handshaken(void) {
@@ -240,7 +265,16 @@ static void hub_handshaken(void) {
     outbox_seal(FRAME_HEADER + 1 + header_bytes);
   }
   hub_state = HUB_RESUMING;
+  hub_retry_at = clock_ns(1) + RESUME_TIMEOUT_MS * 1000000ULL;
 }
+static u32 resume_cursor(u32 active, u32 width, u32 held) {
+  u32 span = (points - 1) * width;
+  u32 from = active > span ? active - span : width;
+  if (held >= from && held < active && held % width == 0)
+    from = held + width;
+  return from < active ? from : 0;
+}
+
 static void hub_resume(void) {
   u8 *f = hub_reply + MESSAGE_HEADER;
   if (!noise_open(&from_hub, 0, 0, f, RESUME_BYTES + NOISE_TAG) ||
@@ -250,11 +284,8 @@ static void hub_resume(void) {
   }
   for (u32 i = 0; i < TIERS; ++i) {
     const struct tier *t = &tiers[i];
-    u32 held = load_le32(f + FRAME_HEADER + 4 * i),
-        span = (points - 1) * t->width, active = t->active.start,
-        oldest = active > span ? active - span : t->width,
-        from = held && held + t->width > oldest ? held + t->width : oldest;
-    hub_cursor[i] = from < active ? from : 0;
+    u32 held = load_le32(f + FRAME_HEADER + 4 * i);
+    hub_cursor[i] = resume_cursor(t->active.start, t->width, held);
   }
   hub_owed = OWE_LIVE | OWE_DISKS;
   hub_state = HUB_STREAMING;
@@ -370,6 +401,7 @@ static void uplink_live(u32 bytes) {
 static void uplink_disks(void) { hub_owed |= OWE_DISKS; }
 
 static void check_uplink_layout(void) {
+  hub_publication_ms = publication_spacing(interval, publish);
   if (SEALED_EXTRA + FRAME_HEADER + live_capacity > OUTBOX_BYTES / 2 ||
       TIERS * (SEALED_EXTRA + FRAME_HEADER + 1 + header_bytes) > OUTBOX_BYTES / 2)
     fail("device layout too large for --hub");
@@ -377,6 +409,8 @@ static void check_uplink_layout(void) {
     read_key_file();
   else
     read_host_id();
+  if (!hub_has_secret && !hub_name_bytes && hub_endpoint.address[0] != 127)
+    fail("--hub outside loopback needs a nonzero device key (--key-file)");
 }
 
 /* Sleeps until the next sample, streaming to the hub meanwhile. */
@@ -397,8 +431,11 @@ static void wait_for_sample(u64 deadline) {
         continue;
       }
     }
-    if (hub_state == HUB_RESOLVING && now >= hub_retry_at) {
-      hub_resolve_failed();
+    if (hub_state != HUB_STREAMING && now >= hub_retry_at) {
+      if (hub_state == HUB_RESOLVING)
+        hub_resolve_failed();
+      else
+        hub_disconnect();
       continue;
     }
     if (hub_state == HUB_STREAMING && hub_backfill())
@@ -406,10 +443,12 @@ static void wait_for_sample(u64 deadline) {
     struct poll_entry e = {(int)hub_fd, POLL_IN, 0};
     if (hub_state == HUB_CONNECTING || outbox_start < outbox_end)
       e.events |= POLL_OUT;
-    u64 wake = hub_state == HUB_RESOLVING && hub_retry_at < deadline
+    u64 wake = hub_state != HUB_STREAMING && hub_retry_at < deadline
                    ? hub_retry_at
                    : deadline;
     if (wait_events(&e, 1, wake) <= 0)
+      continue;
+    if (hub_state != HUB_STREAMING && clock_ns(1) >= hub_retry_at)
       continue;
     if (hub_state == HUB_RESOLVING) {
       if (e.revents & POLL_FAILED)

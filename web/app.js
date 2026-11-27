@@ -1,461 +1,418 @@
 'use strict';
-import {spans,files,liveFile,disksFile,decodeLive,decodeHistory,decodeDisks,skipped as damagedRecords} from './codec.js';
+import {spans,files,liveFile,disksFile,maxSnapshotBytes,historyLength,decodeLive,decodeHistory,decodeDisks,skipped as damagedRecords} from './codec.js';
+import {age,colorNames} from './format.js';
+import gripIcon from './icons/grip-vertical.svg' with {type:'text'};
+import closeIcon from './icons/x.svg' with {type:'text'};
+import {view,createTile,draw,metricKeys,metricLabel,isChart,clearInspection,queueInspection,setCharted} from './tiles.js';
+
 const $=id=>document.getElementById(id);
-const range=$('range'),view=$('view'),statusLine=$('status'),hostSelect=$('hosts');
-const colorNames=['--teal','--violet','--third','--fourth','--core5','--core6','--core7','--core8'];
-const seriesColor=k=>k<colorNames.length?'var('+colorNames[k]+')':'hsl('+((k*137.508)%360).toFixed(1)+' 55% var(--series-lightness))';
-let coreTopology='',cpuSystem=false,memoryFree=false,showSwap=false,interfaceIndex=0,selectedInterface;
-let coreBarsTopology='',coreMeters=[];
-let disksSnapshot,diskError='';
-let state,visible=[],historyCache,pollTimer,busy=false,frame=0,inspection=null,inspectionFrame=0,hostId='',hostsText='',hostConnected=true,changedAt=0;
+const h=(tag,className,...children)=>{const e=document.createElement(tag);if(className)e.className=className;e.append(...children);return e;};
+const range=$('range'),views=$('views'),statusLine=$('status'),grid=$('tiles'),edit=$('edit'),share=$('share'),nameInput=$('board-name');
 const noProbes=Error('No devices have connected to this hub yet');
-const inspectionDate=new Intl.DateTimeFormat(undefined,{year:"numeric",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});
-const percent=n=>n==null?'—':n.toFixed(1)+'%';
-const age=ms=>ms<60000?Math.floor(ms/1000)+'s':ms<3600000?Math.floor(ms/60000)+'m':ms<86400000?Math.floor(ms/3600000)+'h':Math.floor(ms/86400000)+'d';
-const text=(id,value)=>{$(id).textContent=value;};
-/* Four-significant-digit mantissa with K/M/G/T/P letters; binary base for
- * capacities, decimal base for rates. A value just below the next unit never
- * rounds up to it. */
-const byteUnits=['B','K','M','G','T','P'];
-function byteScale(n,base) {
-  let unit=0;const limit=base*.99995;
-  while(n>=limit&&unit<byteUnits.length-1){n/=base;unit++;}
-  return[n,byteUnits[unit]];
+const MAX_BOARDS=64,MAX_TILES=128,MAX_BOARD_NAME=40;
+const validHost=id=>typeof id==='string'&&/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$/.test(id);
+/* A view is one device, or a board: a named list of [host, metric] tiles.
+ * The URL holds the view, so a link reproduces it; saved boards live in
+ * localStorage. saved is the board's index there, or -1. */
+let current=fromURL(),boards=loadBoards(),editing=false,adding=true,boardError='';
+let hosts=[],hostsText='',tiles=[],pollTimer,requestController,refreshError=null,frame=0;
+const sources=new Map();
+
+function validTile(entry) {
+  if(!Array.isArray(entry)||(entry.length!==2&&entry.length!==4))return false;
+  const [host,metric,col,row]=entry;
+  return validHost(host)&&metricKeys.includes(metric)&&(entry.length===2||
+    Number.isInteger(col)&&col>=1&&col<=6&&Number.isInteger(row)&&row>=1&&row<=3*MAX_TILES);
 }
-function byteText(n,base) {
-  if(n==null)return '—';
-  const[value,unit]=byteScale(n,base);
-  return mantissa(value)+unit;
+
+function fromURL() {
+  const query=new URLSearchParams(location.search);
+  if(!query.has('board')){const host=query.get('host');return {kind:'device',host:validHost(host)?host:''};}
+  const tiles=(query.get('tiles')||'').split(',',MAX_TILES).map(item=>item.split('~',3))
+    .map(([host,metric,cell])=>/^\d+\.\d+$/.test(cell)?[host,metric,...cell.split('.').map(Number)]:[host,metric]).filter(validTile);
+  return {kind:'board',name:query.get('board').slice(0,MAX_BOARD_NAME)||'board1',tiles,saved:-1};
 }
-function mantissa(value) {
-  const scaled=Math.round(value*10)/10;
-  return (value>0&&!scaled?'0.1':scaled.toFixed(1));
+function toURL() {
+  const query=current.kind==='device'?(current.host?'?host='+encodeURIComponent(current.host):'?')
+    :'?board='+encodeURIComponent(current.name)+'&tiles='+current.tiles.map(([host,metric,col,row])=>encodeURIComponent(host)+'~'+metric+(col?'~'+col+'.'+row:'')).join(',');
+  history.replaceState(null,'',query);
 }
-const capacity=n=>byteText(n,1024);
-function speed(n) {
-  if(n==null)return '—';
-  return byteText(n,1000)+'/s';
+function loadBoards() {
+  try{
+    const stored=JSON.parse(localStorage.getItem('quectop-boards'));
+    if(Array.isArray(stored))return stored.slice(0,MAX_BOARDS).filter(b=>typeof b?.name==='string'&&b.name.trim()&&Array.isArray(b.tiles))
+      .map(b=>({name:b.name.slice(0,MAX_BOARD_NAME),tiles:b.tiles.slice(0,MAX_TILES).filter(validTile)}));
+  }catch{}
+  return [];
 }
-function capacityPair(used,total) {
-  const left=capacity(used),right=capacity(total),unit=right.at(-1);
-  return (left.endsWith(unit)?left.slice(0,-1):left)+'/'+right;
+function storeBoards(next) {
+  try{localStorage.setItem('quectop-boards',JSON.stringify(next));}catch{return false;}
+  boards=next;
+  return true;
 }
-const plots=[
-  {id:'cores',fields:[],labels:[]},
-  {id:'cpu',fields:[],labels:['user','system','iowait']},
-  {id:'pressure',fields:[],labels:['CPU','memory','I/O']},
-  {id:'memory',fields:[6],labels:['used']},
-  {id:'frequency',fields:[],labels:[]},
-  {id:'temp',fields:[8],labels:['CPU']},
-  {id:'network',fields:[10,9],labels:['upload','download']}
-];
-function configurePlots() {
-  const n=state.cores,f=state.format;
-  interfaceIndex=Math.max(0,state.interfaceNames.indexOf(selectedInterface));
-  selectedInterface=state.interfaceNames[interfaceIndex];
-  plots[1].fields=[f.user,f.system,f.iowait];plots[2].fields=[f.pressure,f.pressure+1,f.pressure+2];
-  plots[3].fields=[showSwap?f.swap:f.memory];plots[3].labels=[showSwap?'swap used':'RAM used'];
-  plots[4].fields=state.frequencyIds.map((_,i)=>f.frequency+i);plots[4].labels=state.frequencyIds.map(id=>'CPU '+id+' policy');
-  plots[5].fields=[f.temp];
-  plots[6].fields=state.interfaces?[f.network+2*interfaceIndex+1,f.network+2*interfaceIndex]:[];
-  text('memory-title',showSwap?'Swap (%)':'Memory (%)');
-  text('memory-series',showSwap?'swap used':'RAM used');
-  text('memory-kind',showSwap?'show RAM':'show swap');
-  $('memory-kind').setAttribute('aria-label',showSwap?'Show RAM history':'Show swap history');
-  $('memory-kind').setAttribute('aria-pressed',String(showSwap));
-  text('network-interface',selectedInterface||'none');
-  text('network-series',selectedInterface||'no interfaces');
-  $('network-toggle').disabled=state.interfaces<2;
-  $('network-toggle').setAttribute('aria-label',state.interfaces>1?'Network '+selectedInterface+'. Show next interface':'Network '+(selectedInterface||'unavailable'));
-  const signature=state.cpuIds.join(',');
-  if(coreTopology!==signature) {
-    plots[0].fields=Array.from({length:n},(_,i)=>i);
-    plots[0].labels=state.cpuIds.map(id=>'CPU '+id);
-    $('core-legend').innerHTML=state.cpuIds.map((id,i)=>'<span><i style="background:'+seriesColor(i)+'"></i>'+id+'</span>').join(' ');
-    coreTopology=signature;
-  }
+const hostName=id=>hosts.find(x=>x.id===id)?.name||id;
+
+function source(id) {
+  let src=sources.get(id);
+  if(!src)sources.set(id,src={id,state:null,visible:[],history:null,skipped:0,disks:null,diskError:'',iface:0,changedAt:0,error:null,
+    touch(){for(const t of tiles)if(t.src===src)t.update();queueDraw();}});
+  return src;
 }
-function shortSpeed(n) {
-  if(n==null)return '—';
-  return byteText(n,1000);
-}
-function renderCoreBars() {
-  if(!state||view.value!=='bars')return;
-  const list=$('core-bars'),signature=state.cpuIds.join(',');
-  if(coreBarsTopology!==signature) {
-    coreMeters=state.cpuIds.map((id,k)=>{
-      const item=document.createElement('li'),label=document.createElement('span'),bar=document.createElement('meter'),value=document.createElement('span');
-      label.className='core-id';label.textContent=id;label.title='CPU '+id;
-      bar.className='core-meter';bar.min=0;bar.max=100;bar.style.color=seriesColor(k);
-      bar.setAttribute('aria-label','CPU '+id+' usage');
-      value.className='core-value';item.append(label,bar,value);
-      return {item,bar,value};
-    });
-    list.style.setProperty('--core-rows',String(Math.ceil(state.cores/2)));
-    list.dataset.columns=String(state.cores>1?2:1);
-    list.replaceChildren(...coreMeters.map(core=>core.item));coreBarsTopology=signature;
-  }
-  for(let k=0;k<coreMeters.length;k++) {
-    const current=state.latest[k],core=coreMeters[k];
-    core.bar.value=current??0;core.bar.dataset.available=String(current!=null);
-    core.bar.setAttribute('aria-valuetext',current==null?'unavailable':percent(current));
-    core.value.textContent=percent(current);
-  }
-}
-function setCoreView() {
-  const bars=view.value==='bars';
-  $('core-plot').hidden=bars;$('core-bars').hidden=!bars;$('core-legend').hidden=bars;
+function render() {
   clearInspection();
-  if(bars)renderCoreBars();else queueDraw();
-}
-function formatValue(plot,n) {
-  return n==null?'—':plot.id==='network'?speed(n):plot.id==='frequency'?Number((n/1000).toFixed(3))+' GHz':n.toFixed(1)+(plot.id==='temp'?' °C':'%');
-}
-function summaries() {
-  const skipped=historyCache.skipped;
-  const r=state.latest,n=state.cores,f=state.format;
-  text('overall',percent(r[f.overall]));text('overall-sub',n+' logical '+(n===1?'CPU':'CPUs'));
-  text('cpu',percent(r[cpuSystem?f.system:f.user]));text('cpu-mode',cpuSystem?'system':'user');
-  $('cpu-toggle').setAttribute('aria-label','CPU time: '+(cpuSystem?'system. Show user time':'user. Show system time'));
-  const memoryPercent=r[f.memory]==null?null:memoryFree?100-r[f.memory]:r[f.memory],total=state.memory*1024;
-  text('memory',memoryPercent==null?'—':capacity(total*memoryPercent/100));
-  text('memory-mode',memoryFree?'free':'used');
-  text('memory-sub',percent(memoryPercent)+' of '+capacity(total));
-  $('memory-toggle').setAttribute('aria-label','Memory '+(memoryFree?'free. Show used memory':'used. Show free memory'));
-  text('swap',state.swap?r[f.swap]==null?'—':capacity(state.swap*1024*r[f.swap]/100):'off');
-  text('swap-sub',state.swap?percent(r[f.swap])+' of '+capacity(state.swap*1024):'no swap configured');
-  text('temp',formatValue(plots[5],r[f.temp]));
-  text('temp-sub',r[f.temp]==null?'sensor unavailable':'thermal sensor');text('sensor-state',r[f.temp]==null?'unavailable':'CPU');
-  const network=plots[6].fields;
-  text('network','U'+shortSpeed(r[network[0]])+'|D'+shortSpeed(r[network[1]]));
-  text('frequency-source',state.frequencies?(state.frequencyHardware.every(Boolean)?'hardware-reported':'driver-reported'):'unavailable');
-  const index=state.index;
-  text('detail','Sample '+state.interval/1000+'s · '+visible.length+' windows · '+age(state.widths[index]*1000)+'/window · lines: average, bands: min or average to max'+(skipped?' · '+skipped+' damaged records skipped':''));
-  status();
-  renderCoreBars();
-}
-let renderedDisks,renderedDiskError;
-function renderDisks() {
-  const list=$('disks');
-  if(disksSnapshot!==renderedDisks||diskError!==renderedDiskError) {
-    renderedDisks=disksSnapshot;renderedDiskError=diskError;
-    if(!disksSnapshot){list.textContent=diskError?'Capacity data unavailable':'Waiting for capacities…';text('disk-count',diskError?'unavailable':'mounted');return;}
-    const rows=disksSnapshot.rows;
-    text('disk-count',rows.length+' mounted'+(disksSnapshot.partial?' · partial':''));
-    const items=rows.map(row=>{
-      const item=document.createElement('li'),label=document.createElement('span'),bar=document.createElement(row.valid?'meter':'span'),values=document.createElement('span'),available=document.createElement('span');
-      label.className='disk-label';label.textContent=row.source.replace(/^\/dev\//,'')+' · '+row.mount;label.title=row.source+' · '+row.mount;
-      bar.className='disk-meter';values.className='disk-values';available.className='disk-available';
-      if(row.valid){
-        bar.min=0;bar.max=row.total;bar.value=row.used;
-        bar.setAttribute('aria-label',row.source+' used space');
-        bar.setAttribute('aria-valuetext',percent(100*row.used/row.total)+' used');
-        values.textContent=capacityPair(row.used,row.total);
-        values.setAttribute('aria-label',capacity(row.used)+' used of '+capacity(row.total));
-        available.textContent=capacity(row.available);
-        const caption=document.createElement('small');caption.textContent='avail';available.append(caption);
-      }else{
-        bar.setAttribute('aria-hidden','true');values.textContent='capacity unavailable';available.textContent='—';
-      }
-      item.append(label,bar,values,available);return item;
-    });
-    list.replaceChildren(...items);
-    if(!rows.length)list.textContent='No mounted local filesystems';
+  const board=current.kind==='board',list=board?current.tiles:current.host?metricKeys.map(metric=>[current.host,metric]):[];
+  const retained=new Map();
+  for(const [host,metric] of list)retained.set(host,retained.get(host)||isChart(metric));
+  for(const [id,src] of sources) {
+    if(!retained.has(id))sources.delete(id);
+    else if(!retained.get(id)){src.history=null;src.visible=[];src.pending=[];src.skipped=0;}
   }
-  if(disksSnapshot)text('disk-status',diskError?'Refresh failed · showing previous capacities':'Updated '+age(Math.max(0,Date.now()-disksSnapshot.generated))+' ago');
+  tiles=list.map(([host,metric,col,row])=>{const t=createTile(metric,source(host),board?hostName(host):'');t.optional=!board;pin(t,col,row);return t;});
+  if(editing)tiles.forEach(decorate);
+  grid.replaceChildren(...tiles.map(t=>t.el),...(editing?[addTile()]:[]));
+  setCharted(tiles.filter(t=>isChart(t.metric)));
+  edit.hidden=!board;$('delete').hidden=!editing||current.saved<0;
+  edit.setAttribute('aria-pressed',String(editing));edit.setAttribute('aria-label',editing?(current.saved<0?'Save as new board':'Save board'):'Edit board');
+  nameInput.hidden=!editing;$('title').hidden=editing;
+  fillViews();updateAll();
 }
-function serviceAge(seconds) {
-  if(seconds>=86400)return Math.floor(seconds/86400)+'d '+Math.floor(seconds%86400/3600)+'h';
-  if(seconds>=3600)return Math.floor(seconds/3600)+'h '+Math.floor(seconds%3600/60)+'m';
-  if(seconds>=60)return Math.floor(seconds/60)+'m '+seconds%60+'s';
-  return seconds+'s';
+function fillViews() {
+  const option=(value,label)=>new Option(label,value),group=(label,...options)=>{const g=h('optgroup','',...options);g.label=label;return g;};
+  const unsaved=current.kind==='board'&&current.saved<0;
+  const add=option('new','New board');add.disabled=boards.length>=MAX_BOARDS;
+  views.replaceChildren(group('Devices',...hosts.map(x=>option('h:'+x.id,x.name+(x.connected?'':' (offline)')))),
+    group('Boards',...boards.map((b,i)=>option('b:'+i,b.name)),...(unsaved?[option('b:-1',current.name+' (unsaved)')]:[]),add));
+  views.value=current.kind==='device'?'h:'+current.host:'b:'+current.saved;
 }
-const serviceMemoryFields={
-  memory:{label:'Cgroup',description:'Memory charged to the service cgroup, including descendants'},
-  rss:{label:'RSS',description:'Resident mapped memory; shared pages counted once per process'},
-  pss:{label:'PSS',description:'Mapped memory with shared pages divided among sharing processes'},
-  uss:{label:'Private',description:'Private clean and dirty mapped pages; excludes hugetlb',rounded:true},
-  anon:{label:'PSS anonymous',rounded:true},
-  file:{label:'PSS file',rounded:true,title:'Mapped libraries and other file-backed pages'},
-  shmem:{label:'PSS shared memory',rounded:true}
-};
-const serviceStates=['unavailable','inactive','active','failed','activating','stopping','reloading','unavailable'];
-let serviceViews=[],serviceSignature;
-function renderServices() {
-  const rows=state.services;
-  $('services-card').hidden=!rows.length;
-  if(!rows.length)return;
-  const metric=$('service-memory-mode').value||'pss',selected=serviceMemoryFields[metric];
-  text('service-memory-heading',selected.label);
-  const sorted=[...rows].sort((a,b)=>a.name.localeCompare(b.name)),signature=sorted.map(row=>row.name+(row.openrc?'\0o':'')).join('\n');
-  if(signature!==serviceSignature) {
-    serviceSignature=signature;text('service-count',rows.length+' tracked');
-    serviceViews=sorted.map(row=>{
-      const item=document.createElement('tr'),name=document.createElement('th'),memory=document.createElement('td'),uptime=document.createElement('td');
-      name.scope='row';
-      const label=document.createElement('span');label.textContent=row.openrc?row.name:row.name.replace(/\.service$/,'');name.title=row.name+(row.openrc?' (OpenRC)':'');
-      const details=document.createElement('details'),summary=document.createElement('summary'),list=document.createElement('dl'),values={};
-      summary.textContent='Breakdown';
-      for(const [field,definition] of Object.entries(serviceMemoryFields)){
-        const term=document.createElement('dt');term.textContent=definition.label;
-        if(definition.title)term.title=definition.title;
-        list.append(term,values[field]=document.createElement('dd'));
-      }
-      details.append(summary,list);name.append(label,details);item.append(name,memory,uptime);
-      return {item,memory,uptime,values};
-    });
-    $('services').replaceChildren(...serviceViews.map(view=>view.item));
+function updateAll() {
+  for(const t of tiles) {
+    t.update();
+    if(t.host){const issue=sourceIssue(t.src);t.host.textContent=hostName(t.src.id)+(issue?' · '+issue:'');t.host.title=issue?t.host.textContent:'';t.host.dataset.state=issue?'error':'ok';}
   }
-  sorted.forEach((row,i)=>{
-    const view=serviceViews[i];
-    for(const [field,definition] of Object.entries(serviceMemoryFields)){
-      const value=view.values[field];value.textContent=capacity(row[field]);
-      value.title=definition.rounded&&row[field]!=null?'Stored rounded to four significant digits':'';
+  const src=current.kind==='device'&&sources.get(current.host),s=src&&src.state;
+  $('host').textContent=current.kind==='board'?current.name:s?.hostname||hostName(current.host);
+  document.title=($('host').textContent?$('host').textContent+' · ':'')+'quectop';
+  $('detail').textContent=s?'Sample '+s.interval/1000+'s · '+src.visible.length+' windows · '+age(s.widths[view.index]*1000)+'/window'+(src.skipped?' · '+src.skipped+' damaged records skipped':''):'';
+  status();queueDraw();
+}
+function quietTime(src){return Date.now()-src.changedAt;}
+function stale(src) {
+  const {interval,publish}=src.state;
+  return quietTime(src)>Math.max(90000,3*Math.ceil(publish/interval)*interval);
+}
+function sourceIssue(src) {
+  if(refreshError||src.error||src.diskError)return 'refresh failed';
+  if(!hosts.find(x=>x.id===src.id)?.connected)return 'offline';
+  if(!src.state)return 'awaiting data';
+  return stale(src)?'stale':'';
+}
+function status() {
+  if(boardError) {
+    statusLine.dataset.state='error';statusLine.textContent=boardError;statusLine.title='';return;
+  }
+  if(refreshError) {
+    const cached=[...sources.values()].some(src=>src.state);
+    statusLine.dataset.state='error';
+    statusLine.textContent=cached?'Refresh failed · showing last snapshot':refreshError===noProbes?refreshError.message:'Cannot load data from quectop-hub';
+    statusLine.title=refreshError.message;
+    return;
+  }
+  if(current.kind==='board') {
+    const issues=[],counts=new Map();
+    let cached=false;
+    for(const src of sources.values()) {
+      const issue=sourceIssue(src);
+      if(!issue)continue;
+      counts.set(issue,(counts.get(issue)||0)+1);
+      const reason=src.error?.message||src.diskError;
+      issues.push(hostName(src.id)+' · '+issue+(reason?' · '+reason:''));
+      cached||=Boolean(src.state);
     }
-    view.memory.textContent=capacity(row[metric]);view.memory.title=row[metric]==null?'Whole-service '+selected.label+' unavailable':selected.description;
-    view.uptime.textContent=row.uptime==null?serviceStates[row.status]:serviceAge(row.uptime);
-    view.uptime.title=row.uptime==null?serviceStates[row.status]:row.processAge?'Age of the main service process':'Time since the service became active';
-  });
-}
-function status(error) {
-  if(error){statusLine.dataset.state='error';statusLine.textContent=state?'Refresh failed · showing last snapshot':error===noProbes?error.message:'Cannot load data from quectop-hub';statusLine.title=error.message;return;}
-  if(!state)return;
+    const size=sources.size,down=issues.length;
+    statusLine.dataset.state=down?'error':size?'ok':'';
+    statusLine.textContent=size?size+(size===1?' device':' devices')+(down?' · '+[...counts].map(([label,count])=>count+' '+label).join(', ')+(cached?' · showing last data':''):' connected'):editing?'Add tiles below':'Empty board';
+    statusLine.title=issues.join('\n');return;
+  }
+  const src=sources.get(current.host),s=src?.state,connected=hosts.find(x=>x.id===current.host)?.connected;
+  if(src?.error){statusLine.dataset.state='error';statusLine.textContent=s?'Refresh failed · showing last snapshot':'Cannot load data from quectop-hub';statusLine.title=src.error.message;return;}
+  if(!s){statusLine.dataset.state='';statusLine.textContent='Loading data';statusLine.title='';return;}
   /* Freshness uses only the browser clock: the device clock may be wrong. */
-  const quiet=Date.now()-changedAt,stale=quiet>Math.max(90000,state.interval*3,state.publish*3);
-  statusLine.dataset.state=!hostConnected||stale?'error':'ok';
-  statusLine.textContent='uptime: '+age(state.uptime)+(!hostConnected?' · offline':stale?' · no new data for '+age(quiet):' · connected');
-  statusLine.title=!hostConnected?'The hub has no connection from this device.':stale?'The device is connected, but no new data has arrived.':'';
+  const delayed=stale(src);
+  statusLine.dataset.state=!connected||delayed?'error':'ok';
+  statusLine.textContent='uptime: '+age(s.uptime)+(!connected?' · offline':delayed?' · no new data for '+age(quietTime(src)):' · connected');
+  statusLine.title=!connected?'The hub has no connection from this device.':delayed?'The device is connected, but no new data has arrived.':'';
 }
-const field=(row,part,plot,k)=>row[part][plot.fields[k]];
-let colors;
 function redraw() {
-  if(!state)return;
-  const count=Math.max(2,state.cores,state.frequencies);
-  if(colors?.theme!==theme||colors.palette.length!==count) {
+  const count=Math.max(2,...[...sources.values()].map(src=>Math.max(src.state?.cores||0,src.state?.frequencies||0)));
+  if(view.colors?.theme!==theme+font||view.colors.palette.length!==count) {
     const style=getComputedStyle(document.documentElement),lightness=style.getPropertyValue('--series-lightness').trim();
-    colors={theme,grid:style.getPropertyValue('--grid'),muted:style.getPropertyValue('--muted'),
+    view.colors={theme:theme+font,font:style.getPropertyValue('--font').trim(),grid:style.getPropertyValue('--grid'),muted:style.getPropertyValue('--muted'),
       palette:Array.from({length:count},(_,k)=>k<colorNames.length?style.getPropertyValue(colorNames[k]).trim():'hsl('+((k*137.508)%360).toFixed(1)+' 55% '+lightness+')')};
   }
-  for(const plot of plots)if(plot.id!=='cores'||view.value!=='bars')draw(plot,colors);
-  renderInspection();
-}
-function draw(plot,colors) {
-  const canvas=$('chart-'+plot.id),rect=canvas.getBoundingClientRect(),w=Math.round(rect.width),h=Math.round(rect.height),dpr=Math.min(devicePixelRatio||1,2);
-  if(!w||!h)return;
-  const pw=Math.round(w*dpr),ph=Math.round(h*dpr),c=canvas.getContext('2d');
-  if(canvas.width!==pw||canvas.height!==ph){canvas.width=pw;canvas.height=ph;}
-  c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,w,h);
-  const left=60,right=w-8,top=8,bottom=h-32,index=state.index,width=state.widths[index]*1000;
-  const end=state.latestTime,start=end-spans[index]*1000;
-  let divisor=1,unit='B',largest=0;
-  if(plot.id==='network') {
-    for(const r of visible)for(const f of plot.fields)largest=Math.max(largest,r.max[f]||0);
-    let u=0;while(largest/1000**u>=999.95&&u<byteUnits.length-1)u++;divisor=1000**u;unit=byteUnits[u];
-    text('network-title','Network ('+unit+'/s)');
-  }
-  if(plot.id==='frequency')divisor=1000;
-  const isPercent=plot.id!=='temp'&&plot.id!=='network'&&plot.id!=='frequency';
-  let max=-Infinity,min=Infinity,hasValue=false;
-  for(const r of visible)for(let k=0;k<plot.fields.length;k++) {
-    const lo=field(r,'min',plot,k)??field(r,'mean',plot,k),hi=field(r,'max',plot,k);
-    if(hi!=null){hasValue=true;max=Math.max(max,hi/divisor);min=Math.min(min,lo/divisor);}
-  }
-  if(hasValue) {
-    const padding=Math.max((max-min)*.1,plot.id==='network'?Math.max(.01/divisor,10**Math.floor(Math.log10(max||1))*.01):plot.id==='frequency'?.05:.5);
-    const step=10**Math.floor(Math.log10(max-min+2*padding))/2;
-    min=Math.floor((min-padding)/step)*step;max=Math.ceil((max+padding)/step)*step;
-    if(plot.id!=='temp')min=Math.max(0,min);
-    if(isPercent)max=Math.min(100,max);
-  }else{min=0;max=isPercent?100:1;}
-  const x=t=>left+(t-start)/(end-start)*(right-left),y=v=>bottom-(v-min)/(max-min)*(bottom-top);
-  const axisDigits=Math.max(0,Math.min(9,-Math.floor(Math.log10((max-min)/4))));
-  const center=r=>Math.max(start,Math.min(end,r.start+(r.current?Math.max(0,end-r.start)/2:width/2)));
-  c.font='14px ui-monospace,monospace';c.lineWidth=.6;c.textBaseline='middle';
-  for(let i=0;i<=4;i++) {
-    const value=min+(max-min)*i/4,py=y(value);
-    c.strokeStyle=colors.grid;c.beginPath();c.moveTo(left,py);c.lineTo(right,py);c.stroke();
-    c.fillStyle=colors.muted;c.textAlign='right';c.fillText(plot.id==='network'?mantissa(value)+unit:Number(value.toFixed(axisDigits)).toString(),left-6,py);
-  }
-  const ticks=w<380?3:5;c.textAlign='center';
-  for(let i=0;i<ticks;i++) {
-    const t=start+(end-start)*i/(ticks-1),px=x(t);
-    c.strokeStyle=colors.grid;c.beginPath();c.moveTo(px,top);c.lineTo(px,bottom);c.stroke();
-    c.fillStyle=colors.muted;const date=new Date(t);
-    const label=index>1?date.toLocaleDateString(undefined,{month:'short',day:'numeric'}):date.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',hour12:false}),half=c.measureText(label).width/2;
-    c.fillText(label,Math.max(left+half,Math.min(right-half,px)),h-12);
-  }
-  c.save();c.beginPath();c.rect(left,top,right-left,bottom-top);c.clip();
-  for(let k=0;k<plot.fields.length;k++) {
-    c.strokeStyle=c.fillStyle=colors.palette[k];
-    let segment=[];
-    const paint=()=>{
-      if(!segment.length)return;
-      c.globalAlpha=.12;c.beginPath();
-      segment.forEach((r,i)=>{const px=x(center(r)),py=y(field(r,'max',plot,k)/divisor);if(i)c.lineTo(px,py);else c.moveTo(px,py);});
-      for(let i=segment.length-1;i>=0;i--){const r=segment[i];c.lineTo(x(center(r)),y((field(r,'min',plot,k)??field(r,'mean',plot,k))/divisor));}
-      c.closePath();c.fill();
-      // Exact peak times locate brief excursions within each averaging window.
-      c.globalAlpha=.5;c.lineWidth=.8;c.beginPath();
-      for(const r of segment) {
-        const f=plot.fields[k],px=x(Math.max(start,Math.min(end,r.peak[f]))),mean=field(r,'mean',plot,k)/divisor;
-        c.moveTo(px,y(mean));c.lineTo(px,y(field(r,'max',plot,k)/divisor));
-      }
-      c.stroke();c.globalAlpha=1;c.lineWidth=1.2;c.beginPath();
-      segment.forEach((r,i)=>{const px=x(center(r)),py=y(field(r,'mean',plot,k)/divisor);if(i)c.lineTo(px,py);else c.moveTo(px,py);});c.stroke();
-      if(segment.length===1){const r=segment[0];c.beginPath();c.arc(x(center(r)),y(field(r,'mean',plot,k)/divisor),2,0,Math.PI*2);c.fill();}
-      segment=[];
-    };
-    let previous=0;
-    for(const r of visible){if(field(r,'mean',plot,k)==null||previous&&r.start-previous>width*1.5)paint();if(field(r,'mean',plot,k)!=null)segment.push(r);previous=r.start;}
-    paint();
-  }
-  c.restore();
-  if(!hasValue){c.fillStyle=colors.muted;c.textAlign='center';c.fillText(plot.id==='temp'?'Sensor unavailable':plot.id==='pressure'&&plot.fields.every(f=>state.latest[f]==null)?'Pressure stall information unavailable':plot.id==='frequency'?'CPU frequency unavailable':plot.id==='memory'&&showSwap&&!state.swap?'No swap configured':'Waiting for samples',(left+right)/2,(top+bottom)/2);}
-  plot.geometry={w,h,left,right,top,bottom,width,start,end,x,y,center,divisor};
-  plot.tipKey='';
-  ensureMarkers(plot);
-  canvas.setAttribute('aria-label',plot.id+' history: average lines and minimum/maximum bands. Latest: '+plot.fields.map((f,k)=>plot.labels[k]+' '+formatValue(plot,state.latest[f])).join(', '));
+  for(const t of tiles)if(isChart(t.metric))draw(t);
+  queueInspection();
 }
 function queueDraw(){if(!frame)frame=requestAnimationFrame(()=>{frame=0;redraw();});}
-async function request(name) {
-  const response=await fetch(name,{cache:'no-cache',signal:AbortSignal.timeout(10000)});
+
+async function request(name,signal) {
+  const response=await fetch(name,{cache:'no-cache',signal:AbortSignal.any([signal,AbortSignal.timeout(10000)])});
   if(!response.ok)throw Error(name+': HTTP '+response.status);
   return response;
 }
-const download=async name=>(await request('h/'+encodeURIComponent(hostId)+'/'+name)).arrayBuffer();
-/* Hub lines: id, connected (0/1), hostname. The URL hash selects a host. */
-async function loadHosts() {
-  const text=await (await request('hosts.txt')).text();
-  const hosts=text.split('\n').filter(Boolean).map(line=>{const[id,connected,name]=line.split('\t');return{id,connected:connected==='1',name:name||id};});
-  const selected=hosts.find(h=>h.id===hostId);
-  if(selected&&text===hostsText){hostConnected=selected.connected;return;}
-  hostsText=text;
-  const wanted=hostId||decodeURIComponent(location.hash.slice(1));
-  hostId=(hosts.find(h=>h.id===wanted)||hosts.find(h=>h.connected)||hosts[0])?.id||'';
-  hostSelect.replaceChildren(...hosts.map(h=>{const option=document.createElement('option');option.value=h.id;option.textContent=h.name+(h.connected?'':' (offline)');option.selected=h.id===hostId;return option;}));
-  hostSelect.hidden=hosts.length<2;
-  hostConnected=Boolean(hosts.find(h=>h.id===hostId)?.connected);
-}
-async function refresh() {
-  clearTimeout(pollTimer);if(document.hidden||busy)return;busy=true;
-  const index=Number(range.value);
+async function download(id,name,signal,expected) {
+  const limit=expected??maxSnapshotBytes;
+  const invalid=()=>Error(name+' has an unexpected length');
+  if(limit>256*1024*1024)throw invalid();
+  const response=await request('h/'+encodeURIComponent(id)+'/'+name,signal);
+  const length=response.type==='cors'||response.headers.has('Content-Encoding')?null:response.headers.get('Content-Length');
+  const announced=length===null?null:Number(length);
+  if(announced!==null&&(!Number.isSafeInteger(announced)||announced<0||announced>limit||expected!==undefined&&announced!==expected)){
+    void response.body?.cancel().catch(()=>{});
+    throw invalid();
+  }
+  const reader=response.body?.getReader();
+  if(!reader)throw invalid();
+  let data=new Uint8Array(announced??0),size=0;
   try {
-    await loadHosts();if(!hostId)throw noProbes;
-    const next=decodeLive(await download(liveFile));next.index=index;
-    const active=next.active[index],key=index+':'+next.points+':'+next.interval+':'+next.metadataHash+':'+next.frequencyBits+':'+next.committed[index];
-    if(!historyCache||historyCache.key!==key){const data=decodeHistory(await download(files[index]),index,next);historyCache={key,data,skipped:damagedRecords};}
-    if(index!==Number(range.value))return;
+    for(;;) {
+      const {done,value}=await reader.read();
+      if(done)break;
+      const end=size+value.byteLength;
+      if(end>limit){void reader.cancel().catch(()=>{});throw invalid();}
+      if(end>data.length){const grown=new Uint8Array(Math.min(limit,Math.max(end,data.length*2)));grown.set(data);data=grown;}
+      data.set(value,size);size=end;
+    }
+  }finally{reader.releaseLock();}
+  signal.throwIfAborted();
+  if(expected!==undefined&&size!==expected)throw invalid();
+  return size===data.length?data.buffer:data.buffer.slice(0,size);
+}
+/* Hub lines: id, connected (0/1), hostname. */
+async function loadHosts(signal) {
+  const text=await (await request('hosts.txt',signal)).text();
+  signal.throwIfAborted();
+  if(text===hostsText)return;
+  hostsText=text;
+  hosts=text.split('\n').map(line=>{const[id,connected,name]=line.split('\t');return{id,connected:connected==='1',name:name||id};}).filter(x=>validHost(x.id));
+  if(current.kind==='device'&&!hosts.some(x=>x.id===current.host)){
+    const pick=hosts.find(x=>x.connected)||hosts[0];
+    if(pick){current.host=pick.id;toURL();render();return;}
+  }
+  fillViews();
+}
+/* Fetches what the view's tiles of one device need: the live snapshot,
+ * history only for charts, capacities only for a Disks tile. */
+async function load(src,index,need,signal) {
+  const next=decodeLive(await download(src.id,liveFile,signal));next.index=index;
+  if(need.chart) {
+    const active=next.active[index],key=[index,next.points,next.interval,next.cores,next.idBits,next.frequencies,next.frequencyBits,next.interfaces,next.metadataHash,next.committed[index]].join(':');
+    if(src.history?.key!==key){const data=decodeHistory(await download(src.id,files[index],signal,historyLength(next,index)),index,next);src.history={key,data};src.skipped=damagedRecords;}
     const cutoff=next.latestTime-spans[index]*1000,width=next.widths[index]*1000;
     const recent=index===0?next.pending.slice():[];if(active)recent.push(active);
     const first=recent.length?recent[0].start:Infinity,newest=active?.start??next.latestTime,rows=[];
-    for(const r of historyCache.data)if(r.start+width>cutoff&&r.start<first&&r.start<=newest)rows.push(r);
+    for(const r of src.history.data)if(r.start+width>cutoff&&r.start<first&&r.start<=newest)rows.push(r);
     for(const r of recent)if(r.start+width>cutoff)rows.push(r);
-    visible=rows.length>next.points?rows.slice(-next.points):rows;
-    if(next.hostname!==state?.hostname){text('host',next.hostname);document.title=(next.hostname?next.hostname+' · ':'')+'quectop';}
-    if(next.generated!==state?.generated)changedAt=Date.now();
-    state=next;configurePlots();summaries();renderServices();queueDraw();
-    if(!disksSnapshot||disksSnapshot.generated!==next.disksGenerated){
-      try{const snapshot=decodeDisks(await download(disksFile));if(snapshot.generated>=next.disksGenerated){disksSnapshot=snapshot;diskError='';}}
-      catch(error){diskError=error.message;}
-    }
-    renderDisks();
-  }catch(error){if(state&&Number(range.value)===index)range.value=String(state.index);status(error);}
-  finally{busy=false;if(!document.hidden)pollTimer=setTimeout(refresh,index!==Number(range.value)?0:15000);}
+    src.pending=rows.length>next.points?rows.slice(-next.points):rows;
+  }else src.pending=[];
+  if(need.disks&&(!src.disks||src.disks.generated!==next.disksGenerated)){
+    try{const snapshot=decodeDisks(await download(src.id,disksFile,signal));if(snapshot.generated>=next.disksGenerated){src.disks=snapshot;src.diskError='';}}
+    catch(error){signal.throwIfAborted();src.diskError=error.message;}
+  }
+  if(!need.disks||src.disks?.generated===next.disksGenerated)src.diskError='';
+  next.active=next.pending=null; // visible rows keep the buckets the charts use
+  if(next.generated!==src.state?.generated)src.changedAt=Date.now();
+  if(src.iface>=next.interfaces)src.iface=0;
+  return next;
 }
-$('cpu-toggle').addEventListener('click',()=>{cpuSystem=!cpuSystem;if(state)summaries();});
-$('memory-toggle').addEventListener('click',()=>{memoryFree=!memoryFree;if(state)summaries();});
-$('memory-kind').addEventListener('click',()=>{showSwap=!showSwap;clearInspection();if(state){configurePlots();queueDraw();}});
-$('service-memory-mode').addEventListener('change',()=>{if(state)renderServices();});
-$('network-toggle').addEventListener('click',()=>{if(!state||state.interfaces<2)return;selectedInterface=state.interfaceNames[(interfaceIndex+1)%state.interfaces];clearInspection();configurePlots();summaries();queueDraw();});
+async function refresh() {
+  clearTimeout(pollTimer);if(document.hidden||requestController)return;
+  requestController=new AbortController();const {signal}=requestController;
+  const index=Number(range.value);let failure=null;
+  try {
+    try{await loadHosts(signal);refreshError=null;}
+    catch(error){if(signal.aborted)return;refreshError=error;throw error;}
+    if(current.kind==='device'&&!current.host)throw noProbes;
+    const needs=new Map();
+    for(const t of tiles){const need=needs.get(t.src)||{chart:false,disks:false};need.chart||=isChart(t.metric);need.disks||=t.metric==='disks';needs.set(t.src,need);}
+    const loaded=[];
+    for(const [src,need] of needs){try{loaded.push([src,await load(src,index,need,signal)]);src.error=null;}catch(error){if(signal.aborted)return;src.error=error;failure||=error;}}
+    if(index!==Number(range.value))return;
+    if(failure&&index!==view.index){range.value=String(view.index);return;}
+    view.index=index;
+    for(const [src,next] of loaded){src.state=next;src.visible=src.pending||[];}
+  }catch(error){failure=error;if(error===noProbes)refreshError=error;if(index!==view.index)range.value=String(view.index);}
+  finally{
+    requestController=null;
+    if(signal.aborted)refresh();
+    else{updateAll();if(!document.hidden)pollTimer=setTimeout(refresh,index!==Number(range.value)?0:15000);}
+  }
+}
+
+/* Edit mode: tiles gain a drag handle (arrow keys also move it) and a remove
+ * button; an extra tile adds new ones. Changes apply at once; save stores. */
+function decorate(t) {
+  const handle=h('button','tile-drag'),remove=h('button','tile-remove');handle.innerHTML=gripIcon;remove.innerHTML=closeIcon;
+  handle.setAttribute('aria-label','Move '+metricLabel(t.metric)+' of '+hostName(t.src.id)+'; use the arrow keys');
+  remove.setAttribute('aria-label','Remove '+metricLabel(t.metric)+' of '+hostName(t.src.id));
+  t.el.prepend(h('div','tile-edit',handle,remove));t.el.classList.add('editing');
+  remove.addEventListener('click',()=>{current.tiles.splice(tiles.indexOf(t),1);changed();});
+  handle.addEventListener('keydown',event=>{
+    const step={ArrowLeft:-1,ArrowUp:-1,ArrowRight:1,ArrowDown:1}[event.key];
+    if(!step)return;event.preventDefault();move(tiles.indexOf(t),tiles.indexOf(t)+step);handle.focus();
+  });
+  handle.addEventListener('pointerdown',event=>{
+    event.preventDefault();
+    const capture=()=>{try{handle.setPointerCapture(event.pointerId);}catch{}};capture();
+    /* The tile's slot stays as a dashed placeholder; a copy follows the pointer. */
+    const box=t.el.getBoundingClientRect(),dx=event.clientX-box.left,dy=event.clientY-box.top,lifted=liftedCopy(t.el,box);
+    t.el.classList.add('dragging');
+    let last=[-99,-99];
+    const place=e=>{lifted.style.left=e.clientX-dx+'px';lifted.style.top=e.clientY-dy+'px';};
+    const follow=e=>{
+      if(e.pointerId!==event.pointerId)return;
+      place(e);
+      if(performance.now()<settled||Math.hypot(e.clientX-last[0],e.clientY-last[1])<24)return;
+      const over=document.elementFromPoint(e.clientX,e.clientY)?.closest('.tile'),to=tiles.findIndex(x=>x.el===over),i=tiles.indexOf(t);
+      if(to>=0){if(tiles[to]!==t){unpin(i);move(i,to);capture();last=[e.clientX,e.clientY];}return;}
+      const cell=freeCell(t,e.clientX,e.clientY);
+      if(cell){animate(()=>{current.tiles[i]=[...current.tiles[i].slice(0,2),...cell];pin(t,...cell);});last=[e.clientX,e.clientY];}
+    };
+    // Re-inserting tiles drops pointer capture: listen on the window, and recapture after each move.
+    const stop=e=>{
+      if(e.pointerId!==event.pointerId)return;
+      removeEventListener('pointermove',follow);removeEventListener('pointerup',stop);removeEventListener('pointercancel',stop);
+      const from=lifted.getBoundingClientRect(),to=t.el.getBoundingClientRect();lifted.remove();t.el.classList.remove('dragging');
+      slide(t.el,from.left-to.left,from.top-to.top);
+    };
+    addEventListener('pointermove',follow);addEventListener('pointerup',stop);addEventListener('pointercancel',stop);
+  });
+}
+/* Pins: on wide screens a tile dropped into an empty cell keeps that cell
+ * (grid lines col, row); other tiles pack around it. Narrower screens use
+ * other spans, so there every tile packs in list order. */
+const wide=matchMedia('(min-width: 1281px)');
+function pin(t,col,row){t.el.classList.toggle('pinned',Boolean(col));if(col){t.el.style.setProperty('--col',col);t.el.style.setProperty('--row',row);}}
+function unpin(i){if(current.tiles[i].length>2){current.tiles[i]=current.tiles[i].slice(0,2);pin(tiles[i]);}}
+/* Track start offsets of a grid axis, from its resolved track sizes. */
+function lines(sizes,start,gap){const at=[];for(const size of sizes.split(' ').map(parseFloat)){at.push(start);start+=size+gap;}at.push(start);return at;}
+/* The free cell under the pointer that fits tile t, as [col, row], or null. */
+function freeCell(t,x,y) {
+  if(!wide.matches)return null;
+  const style=getComputedStyle(grid),area=grid.getBoundingClientRect(),gap=parseFloat(style.columnGap);
+  const cols=lines(style.gridTemplateColumns,area.left,gap),rows=lines(style.gridTemplateRows,area.top,gap);
+  const index=(at,v)=>{let i=0;while(i<at.length-2&&v>=at[i+1]-gap/2)i++;return i;};
+  if(x<area.left||x>area.right||y<area.top)return null;
+  const span=t.el.classList.contains('summary')?[1,1]:[2,3],col=index(cols,x),row=y>area.bottom?rows.length-1:index(rows,y);
+  if(col+span[0]>cols.length-1)return null;
+  for(const other of grid.children){
+    if(other===t.el)continue;
+    const r=other.getBoundingClientRect(),c0=index(cols,r.left+1),r0=index(rows,r.top+1),c1=index(cols,r.right-1),r1=index(rows,r.bottom-1);
+    if(c0<col+span[0]&&col<=c1&&r0<row+span[1]&&row<=r1)return null;
+  }
+  return [col+1,row+1];
+}
+function liftedCopy(el,box) {
+  const copy=el.cloneNode(true),sources=el.querySelectorAll('canvas');
+  copy.querySelectorAll('canvas').forEach((canvas,i)=>{canvas.width=sources[i].width;canvas.height=sources[i].height;canvas.getContext('2d').drawImage(sources[i],0,0);});
+  copy.classList.add('lifted');
+  Object.assign(copy.style,{left:box.left+'px',top:box.top+'px',width:box.width+'px',height:box.height+'px'});
+  document.body.append(copy);return copy;
+}
+/* Moves animate: each tile slides from its old position to its new one. */
+const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+let settled=0;
+function slide(el,x,y){if(!still&&(x||y))el.animate([{transform:'translate('+x+'px,'+y+'px)'},{transform:'none'}],{duration:180,easing:'ease-out'});}
+/* Applies a layout change, then slides every tile from its old position. */
+function animate(change) {
+  const before=new Map(tiles.map(t=>[t.el,t.el.getBoundingClientRect()]));
+  change();
+  for(const [el,old] of before){const now=el.getBoundingClientRect();slide(el,old.left-now.left,old.top-now.top);}
+  // Ignore the pointer while tiles slide, so a tile moving under it does not swap back.
+  settled=performance.now()+180;
+  toURL();queueDraw();
+}
+function move(from,to) {
+  if(to<0||to>=tiles.length||from===to)return;
+  animate(()=>{
+    tiles.splice(to,0,...tiles.splice(from,1));current.tiles.splice(to,0,...current.tiles.splice(from,1));
+    grid.replaceChildren(...tiles.map(t=>t.el),...[...grid.children].filter(e=>e.classList.contains('add-tile')));
+  });
+}
+let addHost='',addMetric=metricKeys[0];
+function addTile() {
+  if(!adding||current.tiles.length>=MAX_TILES)return addTileClosed();
+  const host=h('select'),metric=h('select'),add=h('button','','Add tile');
+  host.setAttribute('aria-label','Device');metric.setAttribute('aria-label','Metric');
+  host.append(...hosts.map(x=>new Option(x.name,x.id)));metric.append(...metricKeys.map(key=>new Option(metricLabel(key),key)));
+  host.value=addHost||hosts[0]?.id||'';metric.value=addMetric;
+  add.addEventListener('click',()=>{const tile=[host.value,metric.value];if(!validTile(tile))return;addHost=host.value;addMetric=metric.value;current.tiles.push(tile);changed();});
+  const cancel=h('button','','Cancel');
+  cancel.addEventListener('click',()=>{adding=false;render();});
+  return h('div','tile add-tile',host,metric,add,cancel);
+}
+/* With the form closed, the last tile reopens it or saves the board. */
+function addTileClosed() {
+  const open=h('button','','Add tile'),done=h('button','',current.saved<0?'Save as new':'Save and exit');
+  open.disabled=current.tiles.length>=MAX_TILES;
+  if(open.disabled)open.title='Board tile limit reached';
+  open.addEventListener('click',()=>{adding=true;render();});
+  done.addEventListener('click',save);
+  return h('div','tile add-tile',open,done);
+}
+function changed(){requestController?.abort();toURL();render();refresh();}
+function boardFailure(message){boardError=message;status();}
+function save() {
+  if(current.saved<0&&boards.length>=MAX_BOARDS){
+    boardFailure('Board limit reached. Delete a saved board to save this one.');return;
+  }
+  const name=nameInput.value.trim().slice(0,MAX_BOARD_NAME)||current.name;
+  let chosen=name;
+  for(let i=2;boards.some((b,index)=>index!==current.saved&&b.name===chosen);i++){
+    const suffix=' ('+i+')';chosen=name.slice(0,MAX_BOARD_NAME-suffix.length)+suffix;
+  }
+  const next=boards.slice(),index=current.saved<0?next.length:current.saved;
+  next[index]={name:chosen,tiles:current.tiles.map(entry=>[...entry])};
+  if(!storeBoards(next)) {
+    current.name=name;toURL();fillViews();
+    boardFailure('Could not save board. Copy the link to keep your draft.');
+    return;
+  }
+  current.name=chosen;current.saved=index;boardError='';editing=false;toURL();render();
+}
+function nextName(){let n=1;while(boards.some(b=>b.name==='board'+n))n++;return 'board'+n;}
+function beginEditing(){nameInput.value=current.name;editing=adding=true;}
+edit.addEventListener('click',()=>{if(editing)save();else{beginEditing();render();nameInput.focus();}});
+nameInput.addEventListener('keydown',event=>{if(event.key==='Enter')save();});
+$('delete').addEventListener('click',()=>{
+  if(current.saved<0)return;
+  if(!confirm('Delete '+boards[current.saved].name+'?'))return;
+  if(!storeBoards(boards.filter((_,index)=>index!==current.saved))){
+    boardFailure('Could not delete board. Try again.');return;
+  }
+  boardError='';editing=false;current={kind:'device',host:hosts.find(x=>x.connected)?.id||hosts[0]?.id||''};changed();
+});
+share.addEventListener('click',async()=>{
+  let copied=true;try{await navigator.clipboard.writeText(location.href);}catch{copied=false;}
+  share.dataset.copied=String(copied);share.title=copied?'Link copied':'Copy failed; use the address bar';
+  setTimeout(()=>{delete share.dataset.copied;share.title='Copy link to this view';},2000);
+});
+views.addEventListener('change',()=>{
+  const value=views.value;boardError='';editing=false;
+  if(value==='new'){current={kind:'board',name:nextName(),tiles:[],saved:-1};beginEditing();}
+  else if(value.startsWith('h:'))current={kind:'device',host:value.slice(2)};
+  else if(value!=='b:-1'){const i=Number(value.slice(2));current={kind:'board',name:boards[i].name,tiles:boards[i].tiles.map(entry=>[...entry]),saved:i};}
+  changed();
+});
 range.addEventListener('change',()=>{clearInspection();refresh();});
-hostSelect.addEventListener('focus',()=>loadHosts().catch(()=>{}));
-hostSelect.addEventListener('change',()=>{location.hash=encodeURIComponent(hostSelect.value);});
-addEventListener('hashchange',()=>location.reload());
-view.addEventListener('change',setCoreView);
-setCoreView();
+/* Font: the system monospace (default) or the system sans; kept per browser. */
+const fontSelect=$('font');let font;try{font=localStorage.getItem('quectop-font');}catch{}
+if(font!=='sans')font='mono';
+function setFont(){document.documentElement.dataset.font=fontSelect.value=font;queueDraw();}
+fontSelect.addEventListener('change',()=>{font=fontSelect.value;try{localStorage.setItem('quectop-font',font);}catch{}setFont();});
 let theme;try{theme=localStorage.getItem('quectop-theme');}catch{}
 if(theme!=='dark'&&theme!=='light')theme=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
 function setTheme(){document.documentElement.dataset.theme=theme;$('theme').setAttribute('aria-label','Use '+(theme==='light'?'dark':'light')+' theme');queueDraw();}
-setTheme();$('theme').addEventListener('click',()=>{theme=theme==='light'?'dark':'light';try{localStorage.setItem('quectop-theme',theme);}catch{}setTheme();});
-new ResizeObserver(queueDraw).observe(document.querySelector('.charts'));
+setFont();setTheme();$('theme').addEventListener('click',()=>{theme=theme==='light'?'dark':'light';try{localStorage.setItem('quectop-theme',theme);}catch{}setTheme();});
+new ResizeObserver(queueDraw).observe(grid);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(pollTimer);else refresh();});
-function ensureMarkers(plot) {
-  const signature=plot.fields.join(',');
-  if(plot.markerKey===signature)return;
-  plot.markers=plot.fields.map((_,k)=>{
-    const marker=document.createElement('i');marker.className='graph-dot';marker.hidden=true;
-    marker.style.background=seriesColor(k);return marker;
-  });
-  $('dots-'+plot.id).replaceChildren(...plot.markers);plot.markerKey=signature;
-}
-function queueInspection(){if(!inspectionFrame)inspectionFrame=requestAnimationFrame(()=>{inspectionFrame=0;renderInspection();});}
-function clearInspection(){inspection=null;queueInspection();}
-function detailText(plot,row) {
-  const fmt=n=>n==null?'unavailable':formatValue(plot,n);
-  return new Date(row.start).toLocaleString()+' · '+plot.fields.map((f,k)=>{
-    const min=field(row,'min',plot,k),max=fmt(field(row,'max',plot,k));
-    return plot.labels[k]+' average '+fmt(field(row,'mean',plot,k))+(min==null?', maximum '+max:', range '+fmt(min)+'–'+max)+', peak '+new Date(row.peak[f]).toLocaleTimeString();
-  }).join(' · ');
-}
-function renderInspection() {
-  const row=inspection&&visible.find(r=>r.start===inspection.start);
-  if(!row)inspection=null;
-  for(const plot of plots) {
-    const guide=$('guide-'+plot.id),tip=$('tip-'+plot.id),geometry=plot.geometry;
-    const shown=row&&(plot.id!=='cores'||view.value!=='bars');
-    guide.hidden=!shown;tip.hidden=true;
-    if(!shown||!geometry){for(const marker of plot.markers||[])marker.hidden=true;continue;}
-    const px=geometry.x(geometry.center(row));
-    guide.style.left=px+'px';guide.style.top=geometry.top+'px';guide.style.height=(geometry.bottom-geometry.top)+'px';
-    for(let k=0;k<plot.fields.length;k++) {
-      const marker=plot.markers[k],value=field(row,'mean',plot,k);
-      marker.hidden=value==null;
-      if(value!=null){marker.style.left=px+'px';marker.style.top=Math.max(geometry.top,Math.min(geometry.bottom,geometry.y(value/geometry.divisor)))+'px';}
-    }
-    if(inspection.id!==plot.id)continue;
-    const key=row.start+':'+state.generated+':'+plot.fields.join(',');
-    tip.hidden=false;
-    if(plot.tipKey!==key) {
-      const fmt=n=>formatValue(plot,n);
-      tip.innerHTML='<time>'+inspectionDate.format(new Date(geometry.center(row)))+'</time><div class="tip-values'+(plot.fields.length>8?' tip-columns':'')+'">'+plot.fields.map((_,k)=>'<div class="tip-row"><i style="background:'+seriesColor(k)+'"></i><span>'+plot.labels[k]+'</span><b>'+fmt(field(row,'mean',plot,k))+'</b></div>').join('')+'</div>';
-      $('detail-'+plot.id).textContent=detailText(plot,row);
-      plot.tipKey=key;plot.tipWidth=tip.offsetWidth;plot.tipHeight=tip.offsetHeight;
-    }
-    const top=inspection.y??geometry.top+12;
-    tip.style.left=Math.max(6,Math.min(geometry.w-plot.tipWidth-6,px+12+plot.tipWidth>geometry.w-6?px-plot.tipWidth-12:px+12))+'px';
-    tip.style.top=Math.max(6,Math.min(geometry.h-plot.tipHeight-6,top-12))+'px';
-  }
-}
-for(const plot of plots) {
-  const canvas=$('chart-'+plot.id);
-  function pointer(event) {
-    if(!visible.length||!plot.geometry)return;
-    const g=plot.geometry,rect=canvas.getBoundingClientRect(),px=event.clientX-rect.left,py=event.clientY-rect.top;
-    if(px<g.left||px>g.right||py<g.top||py>g.bottom){clearInspection();return;}
-    const time=g.start+(px-g.left)/(g.right-g.left)*(g.end-g.start);
-    let low=0,high=visible.length-1;
-    while(low<high){const mid=(low+high)>>1;if(g.center(visible[mid])<time)low=mid+1;else high=mid;}
-    if(low&&Math.abs(g.center(visible[low-1])-time)<Math.abs(g.center(visible[low])-time))low--;
-    if(Math.abs(g.center(visible[low])-time)>g.width*1.5){clearInspection();return;}
-    inspection={id:plot.id,start:visible[low].start,y:py,keyboard:false};queueInspection();
-  }
-  canvas.addEventListener('pointermove',pointer);canvas.addEventListener('pointerdown',pointer);
-  canvas.addEventListener('pointercancel',clearInspection);
-  canvas.parentElement.addEventListener('pointerleave',()=>{if(document.activeElement!==canvas)clearInspection();});
-  canvas.addEventListener('focus',()=>{if(visible.length&&inspection?.id!==plot.id){inspection={id:plot.id,start:visible[visible.length-1].start,keyboard:true};queueInspection();}});
-  canvas.addEventListener('blur',()=>{if(inspection?.id===plot.id)clearInspection();});
-  canvas.addEventListener('keydown',event=>{
-    if(event.key==='Escape'){event.preventDefault();clearInspection();return;}
-    if(inspection?.id===plot.id&&['PageUp','PageDown'].includes(event.key)) {
-      event.preventDefault();const tip=$('tip-'+plot.id);
-      tip.scrollTop+=(event.key==='PageDown'?1:-1)*tip.clientHeight*.8;return;
-    }
-    if(!visible.length||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
-    event.preventDefault();let cursor=inspection?visible.findIndex(r=>r.start===inspection.start):visible.length-1;
-    if(cursor<0)cursor=visible.length-1;
-    if(event.key==='Home')cursor=0;else if(event.key==='End')cursor=visible.length-1;
-    else cursor=Math.max(0,Math.min(visible.length-1,cursor+(event.key==='ArrowRight'?1:-1)));
-    inspection={id:plot.id,start:visible[cursor].start,keyboard:true};queueInspection();
-  });
-}
-refresh();
+render();refresh();

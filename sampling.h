@@ -116,9 +116,10 @@ static u32 discover_networks(int populate) {
 
 static u64 network_rate(u64 current, u64 old, u64 elapsed_ms) {
   u64 delta = current - old;
-  if (delta / elapsed_ms > ~0ULL / 1000000ULL)
-    fail("network counter overflow");
-  return delta / elapsed_ms * 1000000ULL +
+  u64 whole = delta / elapsed_ms;
+  if (whole >= NETWORK_MILLI_MAX / 1000000ULL)
+    return NETWORK_MILLI_MAX;
+  return whole * 1000000ULL +
          delta % elapsed_ms * 1000000ULL / elapsed_ms;
 }
 static void collect_cpu(void) {

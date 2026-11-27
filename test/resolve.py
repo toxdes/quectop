@@ -7,6 +7,7 @@
 with a fake /etc/hosts, /etc/resolv.conf and DNS server."""
 import argparse
 from pathlib import Path
+import select
 import shlex
 import socket
 import struct
@@ -106,10 +107,15 @@ def inside(probe_command, hub_command):
 
         probe, _ = run_probe(probe_command, root, hub, f'HUB.Example.Test.:{port}')
         assert dns.queries == ['hub.example.test'], dns.queries
+        dns.names['hub.example.test'] = '192.0.2.1'
         hub.stop()
         hub.start()
+        wait(lambda: select.select([probe.stderr], [], [], 0)[0], 'probe did not reject a non-loopback resolution')
+        assert b'outside loopback needs a nonzero device key' in probe.stderr.readline()
+        assert not [r for r in hub.hosts() if r[1] == '1']
+        dns.names['hub.example.test'] = '127.0.0.1'
         wait(lambda: [r for r in hub.hosts() if r[1] == '1'], 'did not reconnect')
-        assert dns.queries.count('hub.example.test') >= 2, 'reconnect did not look the name up again'
+        assert dns.queries.count('hub.example.test') >= 3, 'reconnect did not look the name up again'
         stop(probe, hub)
 
         # Failed and unanswered lookups retry with backoff and never stall sampling.

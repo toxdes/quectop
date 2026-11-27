@@ -3,6 +3,7 @@
 #define TIERS 5
 #define HEADER_BYTES 64
 #define LIVE_HEADER_BYTES 144
+#define PENDING_BYTES 1024
 #define QUECTOP_VERSION "0.1.0"
 #define QUECTOP_SCHEMA_VERSION 1
 #define QUECTOP_DISK_SCHEMA_VERSION 1
@@ -24,6 +25,13 @@
 #define HOST_ID_MAX 64
 #define OPEN_MAX (6 + HOST_ID_MAX) /* "QTOP", u8 version, u8 id length, id */
 #define RESUME_BYTES (FRAME_HEADER + 4 * TIERS)
+#define RESUME_TIMEOUT_MS 60000u
+#define OPTION_MAX_MS 3600000u
+#define MAX_PUBLICATION_MS (2 * OPTION_MAX_MS)
+
+static inline u32 transport_timeout_ms(u32 publication_ms) {
+  return 3 * (publication_ms < MAX_PUBLICATION_MS ? publication_ms : MAX_PUBLICATION_MS) + 60000;
+}
 enum {
   /* Probe to hub: u8 tier, the ring file's header and metadata. */
   FRAME_RING = 2,

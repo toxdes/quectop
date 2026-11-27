@@ -85,12 +85,34 @@ static u8 service_parse_rollup(char *data, u64 values[SERVICE_MAPPED_COUNT]) {
   return (found & 3) | ((found & 12) == 12 ? 4 : 0) | ((found >> 1) & 56);
 }
 
-/* The directory fd pins this process: reads fail with ESRCH after it exits,
- * even if its PID is reused. */
-static u8 observe_process_memory(u32 pid, u64 values[SERVICE_MAPPED_COUNT]) {
-  long fd = service_process_directory(pid);
-  if (fd < 0)
-    return 0;
+static int service_member(long fd, const char *path, int legacy) {
+  for (const char *line = read_proc(fd); line && *line;) {
+    const char *member = 0;
+    if (legacy) {
+      const char *p = line;
+      while (*p >= '0' && *p <= '9')
+        ++p;
+      if (p != line && prefix(p, ":name=openrc:"))
+        member = p + sizeof(":name=openrc:") - 1;
+    } else if (prefix(line, "0::")) {
+      member = line + 3;
+    }
+    if (member) {
+      while (*path && *member != '\n' && *member == *path) {
+        ++member;
+        ++path;
+      }
+      return !*path && *member == '\n';
+    }
+    while (*line && *line != '\n')
+      ++line;
+    if (*line)
+      ++line;
+  }
+  return 0;
+}
+
+static u8 read_process_memory(long fd, u64 values[SERVICE_MAPPED_COUNT]) {
   u8 valid = 0;
   char *data = service_read(fd, "smaps_rollup");
   if (data)
@@ -110,6 +132,26 @@ static u8 observe_process_memory(u32 pid, u64 values[SERVICE_MAPPED_COUNT]) {
         ++p;
     }
   }
+  return valid;
+}
+
+/* The proc directory pins the PID's identity after open. Membership checks
+ * catch reuse before open and migrations observed around the memory read. */
+static u8 observe_process_memory(u32 pid, const char *path, int legacy,
+                                 u64 values[SERVICE_MAPPED_COUNT]) {
+  long fd = service_process_directory(pid);
+  if (fd < 0)
+    return 0;
+  long membership = openat(fd, "cgroup", RDONLY | NOFOLLOW | NONBLOCK, 0);
+  u8 valid = 0;
+  if (membership >= 0) {
+    if (service_member(membership, path, legacy)) {
+      valid = read_process_memory(fd, values);
+      if (valid && (clock_ns(1) >= service_deadline || !service_member(membership, path, legacy)))
+        valid = 0;
+    }
+    call4(N_close, membership, 0, 0, 0);
+  }
   call4(N_close, fd, 0, 0, 0);
   return valid;
 }
@@ -117,7 +159,7 @@ static u8 observe_process_memory(u32 pid, u64 values[SERVICE_MAPPED_COUNT]) {
 /* getdents64 shares input with proc parsing. Resume at the selected entry's
  * cookie before the next refill so a child read cannot lose buffered entries.
  */
-static long service_next_directory(long fd) {
+static long service_next_directory(long fd, char *path, u32 parent, u16 *child_bytes) {
   while (clock_ns(1) < service_deadline) {
     long bytes = call4(N_getdents, fd, (long)input, sizeof(input), 0);
     if (bytes == -4)
@@ -142,10 +184,14 @@ static long service_next_directory(long fd) {
         u64 offset = load_le32(entry + 8) | (u64)load_le32(entry + 12) << 32;
         long child = openat(fd, name, RDONLY | DIRECTORY | NOFOLLOW, 0);
         if (child >= 0) {
-          if (seek_file(fd, offset, 0) < 0) {
+          u32 bytes = parent + 1 + name_bytes;
+          if (bytes >= sizeof(input) || seek_file(fd, offset, 0) < 0) {
             call4(N_close, child, 0, 0, 0);
             return -2;
           }
+          path[parent] = '/';
+          memcpy(path + parent + 1, name, name_bytes + 1);
+          *child_bytes = (u16)bytes;
           return child;
         }
         if (child != -20) /* ENOTDIR is possible with DT_UNKNOWN. */
@@ -157,7 +203,8 @@ static long service_next_directory(long fd) {
   return -2;
 }
 
-static int service_group_processes(long group, struct service_observation *row,
+static int service_group_processes(long group, const char *path, int legacy,
+                                   struct service_observation *row,
                                    u32 seen[SERVICE_PROCESS_LIMIT],
                                    u32 *count) {
   long fd = openat(group, "cgroup.procs", RDONLY | NOFOLLOW, 0);
@@ -193,7 +240,9 @@ static int service_group_processes(long group, struct service_observation *row,
           goto done;
         seen[(*count)++] = (u32)pid;
         u64 values[SERVICE_MAPPED_COUNT] = {0};
-        row->mapped_valid &= observe_process_memory((u32)pid, values);
+        row->mapped_valid &= observe_process_memory((u32)pid, path, legacy, values);
+        if (!row->mapped_valid)
+          goto done;
         for (u32 j = 0; j < SERVICE_MAPPED_COUNT; ++j) {
           if (values[j] > ~0ULL - row->mapped[j])
             row->mapped_valid &= (u8) ~(1 << j);
@@ -210,28 +259,39 @@ done:
   return complete;
 }
 
-static void observe_service_memory(long group,
-                                   struct service_observation *row) {
+static void observe_service_memory(long group, const char *membership, int legacy,
+                                    struct service_observation *row) {
+  char path[sizeof(input)];
+  unsigned long bytes = length(membership);
+  if (bytes >= sizeof(path))
+    return;
+  memcpy(path, membership, bytes + 1);
   long stack[SERVICE_DEPTH_LIMIT];
+  u16 path_bytes[SERVICE_DEPTH_LIMIT] = {(u16)bytes};
   u32 seen[SERVICE_PROCESS_LIMIT], count = 0, depth = 0, groups = 1;
   row->mapped_valid = SERVICE_MAPPED_ALL;
-  if (!service_group_processes(group, row, seen, &count))
+  if (!service_group_processes(group, path, legacy, row, seen, &count)) {
     row->mapped_valid = 0;
+    return;
+  }
   stack[0] = group;
   for (;;) {
-    long child = service_next_directory(stack[depth]);
+    u16 child_bytes;
+    long child = service_next_directory(stack[depth], path, path_bytes[depth], &child_bytes);
     if (child >= 0) {
       if (depth + 1 == SERVICE_DEPTH_LIMIT || groups++ == 256 ||
-          !service_group_processes(child, row, seen, &count)) {
+          !service_group_processes(child, path, legacy, row, seen, &count)) {
         call4(N_close, child, 0, 0, 0);
         row->mapped_valid = 0;
         break;
       }
       stack[++depth] = child;
+      path_bytes[depth] = child_bytes;
     } else if (child == -1) {
       if (!depth)
         break;
       call4(N_close, stack[depth--], 0, 0, 0);
+      path[path_bytes[depth]] = 0;
     } else {
       row->mapped_valid = 0;
       break;

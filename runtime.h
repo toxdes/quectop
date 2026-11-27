@@ -32,19 +32,25 @@ static void finish(int code) {
   call4(N_exit, code, 0, 0, 0);
   __builtin_unreachable();
 }
-static void write_all(long fd, const void *data, unsigned long bytes) {
+static inline __attribute__((always_inline)) int
+try_write_all(long fd, const void *data, unsigned long bytes) {
   const char *p = data;
   while (bytes) {
     long n = call4(N_write, fd, (long)p, bytes, 0);
     if (n == -4)
       continue;
-    if (n <= 0) {
-      const char m[] = PROGRAM_NAME ": write failed\n";
-      call4(N_write, 2, (long)m, sizeof(m) - 1, 0);
-      finish(1);
-    }
+    if (n <= 0)
+      return 0;
     p += n;
     bytes -= (unsigned long)n;
+  }
+  return 1;
+}
+static void write_all(long fd, const void *data, unsigned long bytes) {
+  if (!try_write_all(fd, data, bytes)) {
+    const char m[] = PROGRAM_NAME ": write failed\n";
+    call4(N_write, 2, (long)m, sizeof(m) - 1, 0);
+    finish(1);
   }
 }
 static void fail(const char *s) __attribute__((noreturn));
@@ -66,12 +72,15 @@ static void check_mapping(long result, const char *s) {
 #else
 #define check_mapping check
 #endif
-static long temporary_output(long directory, const char *name) {
+static long temporary_output_mode(long directory, const char *name, long mode) {
   /* Recreate leftovers instead of truncating hardlinks or opening FIFOs. */
   long result = call4(N_unlink, directory, (long)name, 0, 0);
   if (result < 0 && result != -2)
     return result;
-  return openat(directory, name, WRONLY | CREATE | EXCL | NOFOLLOW, 0644);
+  return openat(directory, name, WRONLY | CREATE | EXCL | NOFOLLOW, mode);
+}
+static long temporary_output(long directory, const char *name) {
+  return temporary_output_mode(directory, name, 0644);
 }
 static int number(const char **p, u64 *value) {
   u64 n = 0;
@@ -101,8 +110,8 @@ static int prefix(const char *s, const char *key) {
   return 1;
 }
 
-static void positioned(long fd, void *data, unsigned long bytes, u64 offset,
-                       int writing) {
+static inline __attribute__((always_inline)) int
+try_positioned(long fd, void *data, unsigned long bytes, u64 offset, int writing) {
   char *p = data;
   while (bytes) {
     long n =
@@ -110,11 +119,17 @@ static void positioned(long fd, void *data, unsigned long bytes, u64 offset,
     if (n == -4)
       continue;
     if (n <= 0)
-      fail(writing ? "history write failed" : "history header unreadable");
+      return 0;
     bytes -= (unsigned long)n;
     offset += (u64)n;
     p += n;
   }
+  return 1;
+}
+static void positioned(long fd, void *data, unsigned long bytes, u64 offset,
+                       int writing) {
+  if (!try_positioned(fd, data, bytes, offset, writing))
+    fail(writing ? "history write failed" : "history header unreadable");
 }
 static u32 hash_more(u32 h, const void *data, unsigned long bytes) {
   const u8 *p = data;

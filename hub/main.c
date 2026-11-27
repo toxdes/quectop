@@ -9,6 +9,7 @@
 static char input[4096]; /* data directory path scratch */
 
 #include "../runtime.h"
+#include "../layout.h"
 #include "../net.h"
 #include "../datadir.h"
 #include "../lines.h"
@@ -48,10 +49,12 @@ static void install_assets(void) {
   if (current)
     return;
   for (u32 i = 0; i < 3; ++i)
-    replace_file(data_fd, assets[i].temporary, assets[i].name, assets[i].start,
-                 (u32)(assets[i].end - assets[i].start));
-  replace_file(data_fd, ".assets.revision.tmp", ".assets.revision", revision,
-               sizeof(revision) - 1);
+    if (!replace_file(data_fd, assets[i].temporary, assets[i].name, assets[i].start,
+                      (u32)(assets[i].end - assets[i].start)))
+      fail("cannot install dashboard asset");
+  if (!replace_file(data_fd, ".assets.revision.tmp", ".assets.revision", revision,
+                    sizeof(revision) - 1))
+    fail("cannot publish dashboard revision");
 }
 
 /* Parses "a.b.c.d:port". */
@@ -150,12 +153,12 @@ void entry(long *stack) {
   struct endpoint probes_at;
   long probe_listener = listen_on(probes_spec, "--probes needs IPV4:PORT", &probes_at);
   keys_required = probes_at.address[0] != 127;
-  long keys_fd = openat(AT_CWD, keys_path, RDONLY, 0);
+  long keys_fd = openat(AT_CWD, keys_path, RDONLY | NONBLOCK, 0);
   if (keys_fd < 0 && keys_required)
     fail("--probes beyond 127.0.0.1 needs device keys; add one with "
          "--add-device NAME");
   if (keys_fd >= 0 && !private_file(keys_fd))
-    fail("keys file is readable by other users; run chmod 600 on it");
+    fail(PRIVATE_KEYS_FILE);
   if (keys_fd >= 0)
     call4(N_close, keys_fd, 0, 0, 0);
   long http_listener =
@@ -169,25 +172,32 @@ void entry(long *stack) {
 
   struct poll_entry entries[2 + MAX_PROBES + MAX_CLIENTS];
   void *owners[2 + MAX_PROBES + MAX_CLIENTS];
+  u32 scan_from = 0;
   for (;;) {
     u64 now = clock_ns(1), deadline = now + 3600000000000ULL;
-    u32 count = 2;
+    if (hosts_retry_at && now >= hosts_retry_at)
+      publish_hosts();
+    u32 count = 2, scan_index = MAX_PROBES;
     entries[0] = (struct poll_entry){(int)probe_listener, POLL_IN, 0};
     entries[1] = (struct poll_entry){(int)http_listener, POLL_IN, 0}; /* -1: ignored */
     for (u32 i = 0; i < MAX_PROBES; ++i) {
       struct probe *a = &probes[i];
       if (a->fd < 0)
         continue;
-      u64 expires = a->last_ns + (u64)a->timeout_ms * 1000000;
+      u64 expires = probe_deadline(a);
       if (now >= expires) {
         close_probe(a);
         continue;
       }
       if (expires < deadline)
         deadline = expires;
+      if (a->resume_deadline && a->rings == ALL_RINGS &&
+          (scan_index == MAX_PROBES || (scan_index < scan_from && i >= scan_from)))
+        scan_index = i;
       owners[count] = a;
       entries[count++] = (struct poll_entry){(int)a->fd, POLL_IN, 0};
     }
+    u32 probes_end = count;
     for (u32 i = 0; i < MAX_CLIENTS; ++i) {
       struct client *c = &clients[i];
       if (c->fd < 0)
@@ -202,17 +212,21 @@ void entry(long *stack) {
       entries[count++] =
           (struct poll_entry){(int)c->fd, c->head_bytes ? POLL_OUT : POLL_IN, 0};
     }
+    if (hosts_retry_at && hosts_retry_at < deadline)
+      deadline = hosts_retry_at;
+    if (scan_index < MAX_PROBES)
+      deadline = now; /* Poll ready sockets before the next scan chunk. */
     if (wait_events(entries, count, deadline) <= 0)
-      continue;
-    if (entries[0].revents)
+      count = 0;
+    if (count && entries[0].revents)
       accept_probe(probe_listener);
-    if (http_listener >= 0 && entries[1].revents)
+    if (count && http_listener >= 0 && entries[1].revents)
       accept_client(http_listener);
     for (u32 i = 2; i < count; ++i) {
       short revents = entries[i].revents;
       if (!revents)
         continue;
-      if (owners[i] >= (void *)probes && owners[i] < (void *)(probes + MAX_PROBES)) {
+      if (i < probes_end) {
         struct probe *a = owners[i];
         /* An earlier stream in this pass may have replaced this one. */
         if (a->fd == entries[i].fd)
@@ -226,6 +240,12 @@ void entry(long *stack) {
         else
           read_client(c);
       }
+    }
+    if (scan_index < MAX_PROBES) {
+      struct probe *a = &probes[scan_index];
+      scan_from = (scan_index + 1) % MAX_PROBES;
+      if (a->fd >= 0 && (clock_ns(1) >= probe_deadline(a) || !resume_probe(a)))
+        close_probe(a);
     }
   }
 }

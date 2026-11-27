@@ -27,7 +27,7 @@ Every message is a `u16` length, then that many bytes. The largest message is 65
 
 	| Bytes | Field |
 	| --- | --- |
-	| 4 | Probe `--publish-ms` |
+	| 4 | Effective publication period in milliseconds, rounded up to a whole number of sample intervals |
 	| 1 | Host name length, 0–64 |
 	| n | Host name |
 
@@ -80,9 +80,9 @@ The hub ignores a frame of any other type, so a new optional frame type needs no
 After the handshake, the two sides do these steps:
 
 1. The probe sends five RING frames.
-2. The hub keeps each replica ring whose header matches. It recreates the others.
+2. The hub checks each ring's geometry against the device layout. It scans matching rings with one link in chunks between socket polls and recreates the others.
 3. The hub sends RESUME.
-4. For each tier, the probe sends the buckets after the hub's newest, oldest first. It reads them from its ring files. Buckets not yet flushed come from memory.
+4. For each tier, the probe sends the buckets after the hub's newest, oldest first. If the hub's newest bucket is at or beyond the probe's active window, the probe resends the retained window. Buckets not yet flushed come from memory.
 5. The probe sends the latest LIVE and DISKS snapshots.
 6. The probe sends each new bucket and snapshot when it writes them.
 
@@ -90,7 +90,7 @@ While a tier is still sending old buckets, the probe does not send that tier's n
 
 ## Validation
 
-The hub validates every frame before it writes to a replica. It checks the type, the length, the magic number, the version, and the checksum. A bucket is written to the slot that its start time selects. Snapshots are replaced atomically.
+The hub validates every frame before it writes to a replica. It checks the type, length, magic number, version, and checksum. LIVE must match the geometry announced in RING. The hub writes each bucket to the slot selected by its start time and replaces snapshots atomically.
 
 The hub closes the connection when it receives any of these messages:
 

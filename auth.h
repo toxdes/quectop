@@ -2,12 +2,22 @@
  * --keys file and a probe's --key-file. The key is the Noise PSK (noise.h). */
 #define KEY_BYTES 32
 
-/* Whether only the owner may read fd's file, as ssh demands of keys. */
+static int regular_file(long fd, u32 *links) {
+  u8 info[256]; /* struct statx */
+  u32 mask = links ? 7 : 3; /* STATX_TYPE | STATX_MODE [| STATX_NLINK] */
+  if (call6(N_statx, fd, (long)"", 0x1000 /* AT_EMPTY_PATH */,
+            mask, (long)info, 0) < 0 || (info[0] & mask) != mask)
+    return -1;
+  int mode = info[28] | info[29] << 8;
+  if (links)
+    *links = load_le32(info + 16);
+  return (mode & 0170000) == 0100000 ? mode : -1;
+}
+
+/* A regular file accessible only to its owner. */
 static int private_file(long fd) {
-  u8 info[256]; /* struct statx; stx_mode is the u16 at 28 */
-  return call6(N_statx, fd, (long)"", 0x1000 /* AT_EMPTY_PATH */, 2 /* MODE */,
-               (long)info, 0) == 0 &&
-         !((info[28] | info[29] << 8) & 077);
+  int mode = regular_file(fd, 0);
+  return mode >= 0 && !(mode & 077);
 }
 
 static int hex_digit(char c) {

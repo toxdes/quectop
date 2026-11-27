@@ -210,6 +210,7 @@ static inline long call6(long n, long a, long b, long c, long d, long e,
 #define CREATE 64
 #define EXCL 128
 #define APPEND 0x400
+#define NONBLOCK 0x800
 #define TRUNC 512
 #define PATH_ONLY 0x200000
 #if defined(__aarch64__) || defined(__arm__)

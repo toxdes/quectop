@@ -48,6 +48,17 @@ int main(int argc, char **argv) {
   if (row.mapped_valid != 1 || row.mapped[0] != 123)
     fail("RSS fallback without PSS permissions");
   row = (struct service_observation){0};
+  observe_openrc("reused", &row);
+  if (row.mapped_valid || row.mapped[0])
+    fail("reused PID contributed memory from a different cgroup");
+  const char *group_layouts[] = {"hybrid", "legacy"};
+  for (u32 i = 0; i < 2; ++i) {
+    row = (struct service_observation){0};
+    observe_openrc(group_layouts[i], &row);
+    if (row.mapped_valid != 63 || row.mapped[0] != 400)
+      fail("OpenRC cgroup membership must use the matching hierarchy");
+  }
+  row = (struct service_observation){0};
   observe_openrc("partial", &row);
   if (row.mapped_valid)
     fail("partial aggregates must be unavailable");
@@ -78,10 +89,12 @@ int main(int argc, char **argv) {
   service_deadline = clock_ns(1) + 5000000000ULL;
   const char *stat = service_read(service_proc, "self/stat");
   u64 pid, actual[6] = {0};
-  if (!stat || !number(&stat, &pid) || pid > 0xffffffffU ||
-      (observe_process_memory((u32)pid, actual) & 3) != 3 || !actual[0] ||
-      !actual[1])
+  if (!stat || !number(&stat, &pid) || pid > 0xffffffffU)
+    fail("real process ID");
+  long proc = service_process_directory((u32)pid);
+  if (proc < 0 || (read_process_memory(proc, actual) & 3) != 3 || !actual[0] || !actual[1])
     fail("real process RSS and PSS");
+  call4(N_close, proc, 0, 0, 0);
   write_all(1, encoded, encoded_bytes);
   return 0;
 }

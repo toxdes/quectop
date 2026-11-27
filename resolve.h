@@ -3,6 +3,8 @@
 #define HOST_NAME_TEXT 254 /* 253 + NUL */
 #define NAMESERVERS 3      /* resolv.conf's MAXNS */
 #define DNS_PORT 0x3500    /* 53, network byte order */
+#define DNS_PACKET_BYTES 512 /* UDP without EDNS */
+#define DNS_NAME_BYTES 255
 
 static int same_name(const char *a, u32 a_bytes, const char *b, u32 b_bytes) {
   if (a_bytes && a[a_bytes - 1] == '.')
@@ -98,44 +100,93 @@ static u32 dns_query(u8 *out, u16 id, const char *name, u32 bytes) {
   memcpy(out + n, tail, sizeof(tail));
   return n + sizeof(tail);
 }
-/* Advances past a possibly compressed name; 0 when malformed. */
-static u32 skip_name(const u8 *m, u32 bytes, u32 p) {
-  while (p < bytes) {
-    u8 n = m[p];
-    if (!n)
-      return p + 1;
-    if ((n & 0xc0) == 0xc0)
-      return p + 2 <= bytes ? p + 2 : 0;
-    if (n > 63)
+/* Expands a wire name and returns the next offset, or zero on failure. */
+static u32 dns_name(const u8 *m, u32 bytes, u32 at, u8 *name, u32 *written) {
+  u32 next = 0, used = 0, limit = bytes;
+  while (at < limit) {
+    u32 n = m[at++];
+    if ((n & 0xc0) == 0xc0) {
+      if (at == limit)
+        return 0;
+      u32 target = ((n & 63) << 8) | m[at];
+      if (target < 12 || target >= at - 1)
+        return 0;
+      if (!next)
+        next = at + 1;
+      limit = at - 1;
+      at = target;
+      continue;
+    }
+    if (n > 63 || n > limit - at || used + 1 + n > DNS_NAME_BYTES)
       return 0;
-    p += 1u + n;
+    name[used++] = (u8)n;
+    if (!n) {
+      *written = used;
+      return next ? next : at;
+    }
+    memcpy(name + used, m + at, n);
+    used += n;
+    at += n;
   }
   return 0;
 }
-/* First A record of a successful reply to id. Resolvers follow CNAMEs. */
-static int dns_answer(const u8 *m, u32 bytes, u16 id, u8 *address) {
-  if (bytes < 12 || m[0] != (u8)(id >> 8) || m[1] != (u8)id ||
-      !(m[2] & 0x80) || (m[2] & 0x78) || (m[3] & 0x0f))
-    return 0;
-  u32 questions = (u32)m[4] << 8 | m[5], answers = (u32)m[6] << 8 | m[7],
-      p = 12;
-  while (questions--) {
-    p = skip_name(m, bytes, p);
-    if (!p || p + 4 > bytes)
+
+static int dns_equal(const u8 *a, const u8 *b, u32 bytes) {
+  for (u32 i = 0; i < bytes; ++i) {
+    u8 x = a[i], y = b[i];
+    if (x >= 'A' && x <= 'Z')
+      x |= 32;
+    if (y >= 'A' && y <= 'Z')
+      y |= 32;
+    if (x != y)
       return 0;
-    p += 4;
   }
-  while (answers-- && (p = skip_name(m, bytes, p)) && p + 10 <= bytes) {
-    u32 type = (u32)m[p] << 8 | m[p + 1], class = (u32)m[p + 2] << 8 | m[p + 3],
-        data = (u32)m[p + 8] << 8 | m[p + 9];
-    p += 10;
-    if (p + data > bytes)
-      return 0;
-    if (type == 1 && class == 1 && data == 4) {
-      memcpy(address, m + p, 4);
-      return 1;
+  return 1;
+}
+
+static int dns_answer(const u8 *m, u32 bytes, const u8 *query,
+                      u32 query_name_bytes, u8 *address) {
+  if (bytes < 12 || bytes > DNS_PACKET_BYTES || m[0] != query[0] ||
+      m[1] != query[1] || (m[2] & 0xfa) != 0x80 || (m[3] & 0x0f) ||
+      m[4] || m[5] != 1)
+    return 0;
+  u8 wanted[DNS_NAME_BYTES], owner[DNS_NAME_BYTES];
+  u32 wanted_bytes, first = dns_name(m, bytes, 12, wanted, &wanted_bytes);
+  if (!first || first + 4 > bytes || wanted_bytes != query_name_bytes ||
+      !dns_equal(wanted, query + 12, wanted_bytes) || m[first] ||
+      m[first + 1] != 1 || m[first + 2] || m[first + 3] != 1)
+    return 0;
+  first += 4;
+  /* Restart from the first answer for each alias, regardless of record order. */
+  for (u32 depth = 0; depth <= 8; ++depth) {
+    u32 alias = 0, alias_end = 0, at = first;
+    for (u32 n = (u32)m[6] << 8 | m[7]; n; --n) {
+      u32 owner_bytes;
+      at = dns_name(m, bytes, at, owner, &owner_bytes);
+      if (!at || at + 10 > bytes)
+        return 0;
+      u32 type = (u32)m[at] << 8 | m[at + 1];
+      u32 klass = (u32)m[at + 2] << 8 | m[at + 3];
+      u32 length = (u32)m[at + 8] << 8 | m[at + 9];
+      at += 10;
+      if (length > bytes - at)
+        return 0;
+      if (klass == 1 && owner_bytes == wanted_bytes && dns_equal(owner, wanted, owner_bytes)) {
+        if (type == 1 && length == 4) {
+          memcpy(address, m + at, 4);
+          return 1;
+        }
+        if (type == 5) {
+          if (alias)
+            return 0;
+          alias = at;
+          alias_end = at + length;
+        }
+      }
+      at += length;
     }
-    p += data;
+    if (!alias || dns_name(m, bytes, alias, wanted, &wanted_bytes) != alias_end)
+      return 0;
   }
   return 0;
 }

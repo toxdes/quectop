@@ -9,6 +9,7 @@ independent noiseprotocol package."""
 
 import argparse
 import http.client
+import os
 from pathlib import Path
 import shlex
 import socket
@@ -221,6 +222,17 @@ def check_http(hub, identity):
     stray.mkdir(parents=True)
     (stray / 'live.v1.bin').write_bytes(b'not served')
     assert get(hub.http, f'/x/{identity}/live.v1.bin')[0] == 404, 'only h/ holds host files'
+    alias = hub.directory / 'h' / 'alias'
+    alias.symlink_to(identity, target_is_directory=True)
+    fifo = hub.directory / 'unavailable.txt'
+    os.mkfifo(fifo)
+    try:
+        assert get(hub.http, '/h/alias/live.v1.bin')[0] == 404, 'directory alias was followed'
+        assert get(hub.http, '/unavailable.txt')[0] == 404, 'FIFO accepted'
+        assert get(hub.http, '/hosts.txt')[0] == 200, 'HTTP stalled on a special file'
+    finally:
+        alias.unlink()
+        fifo.unlink()
     assert get(hub.http, '/', method='POST')[0] == 405
     with socket.create_connection(('127.0.0.1', hub.http)) as sock:
         sock.sendall(b'GET / HTTP/1.1\r\nX: ' + b'a' * 3000)
@@ -255,6 +267,20 @@ def check_keys(command, probe_command, root, ring_headers):
     run = lambda *args: subprocess.run(command + ['--keys', str(keys), *args], capture_output=True, timeout=5)
     exposed = run('--data-dir', str(root / 'keyed'), '--probes', f'0.0.0.0:{free_port()}')
     assert exposed.returncode == 1 and b'needs device keys' in exposed.stderr, exposed.stderr
+    keys.parent.mkdir(parents=True, exist_ok=True)
+    for mode in (0o644, 0o640):
+        keys.write_bytes(b'# existing file\n')
+        keys.chmod(mode)
+        result = run('--add-device', 'laptop')
+        assert result.returncode == 1 and not result.stdout, result.stderr
+        assert keys.read_bytes() == b'# existing file\n'
+    keys.unlink()
+    os.mkfifo(keys, 0o600)
+    result = run('--add-device', 'laptop')
+    assert result.returncode == 1 and not result.stdout, result.stderr
+    assert keys.is_fifo()
+    keys.unlink()
+    keys.parent.rmdir()  # exercise directory and key creation below
     added = run('--add-device', 'laptop')
     assert added.returncode == 0, added.stderr
     name, hex_key = added.stdout.decode().split()
@@ -327,17 +353,17 @@ def check_keys(command, probe_command, root, ring_headers):
         hub.process.wait(timeout=5)
     log = hub.process.stderr.read().decode()
     assert 'rejected device laptop' in log and 'rejected device tablet' in log, log
-    assert 'keys file is readable by other users' in log, log
+    assert 'keys must be a private regular file' in log, log
     keys.chmod(0o644)
     started = run('--data-dir', str(root / 'keyed'), '--probes', f'127.0.0.1:{free_port()}')
-    assert started.returncode == 1 and b'readable by other users' in started.stderr, started.stderr
+    assert started.returncode == 1 and b'private regular file' in started.stderr, started.stderr
     exposed_key = root / 'exposed.key'
     exposed_key.write_text(key_file.read_text())
     exposed_key.chmod(0o604)
 
     for args, expected in ((['--key-file', str(key_file)], b'--key-file needs --hub'),
                            (['--hub', '127.0.0.1:1', '--key-file', str(keys.parent)], b'--key-file'),
-                           (['--hub', '127.0.0.1:1', '--key-file', str(exposed_key)], b'readable by other users'),
+                           (['--hub', '127.0.0.1:1', '--key-file', str(exposed_key)], b'private regular file'),
                            (['--hub', 'https://example.com'], b'not a URL')):
         result = subprocess.run(probe_command + ['--data-dir', str(root / 'unused')] + args,
                                 capture_output=True, timeout=5)
@@ -368,7 +394,7 @@ def port_open(port):
         return False
 
 
-def check_protocol(hub, ring_headers):
+def check_protocol(hub, ring_headers, live):
     """A hand-written probe: RESUME semantics, record storage, replacement, rejection."""
     def session():
         probe = Probe(hub.probes, b'python-probe')
@@ -437,9 +463,28 @@ def check_protocol(hub, ring_headers):
     newer = bytearray(ring_headers[0])
     newer[8:12] = struct.pack('<I', 2)
     refused(lambda a: a.send(2, b'\x00' + bytes(newer)))
+    incompatible = bytearray(ring_headers[0])
+    struct.pack_into('<I', incompatible, 28, record_bytes + 4)
+    struct.pack_into('<I', incompatible, 60, fnv(incompatible[64:], fnv(incompatible[:60])))
+    refused(lambda a: a.send(2, b'\x00' + bytes(incompatible)))
     live_probe, _ = session()
     live_probe.send(5, b'QUECTOPL' + struct.pack('<I', 2) + bytes(140))
     assert closed(live_probe.sock), 'newer live format accepted'
+    live_probe, _ = session()
+    incompatible = bytearray(live)
+    struct.pack_into('<I', incompatible, 12, points + 1)
+    struct.pack_into('<I', incompatible, len(incompatible) - 4, fnv(incompatible[:-4]))
+    live_probe.send(5, incompatible)
+    assert closed(live_probe.sock), 'incompatible live layout accepted'
+    backup = hub.directory.parent / 'hardlinked-ring-backup'
+    os.link(replica, backup)
+    saved = backup.read_bytes()
+    fresh, held = session()
+    assert held[0] == 0 and not replica.samefile(backup), 'shared ring inode was reused'
+    fresh.send(4, b'\x00' + bytes(record))
+    wait(lambda: records(replica.read_bytes()).get(start), 'replacement ring did not accept records')
+    assert backup.read_bytes() == saved
+    fresh.sock.close()
     assert not (hub.directory / '..' / 'escape').exists()
     assert [row[0] for row in hub.hosts()].count('python-probe') == 1
 
@@ -487,6 +532,63 @@ def check_impostor(probe_command, root):
     assert not probe.stderr.read()
 
 
+def check_replica_io(command, root, ring_headers, live):
+    hub = Hub(command, root / 'replica-io')
+    hub.start()
+    probes = []
+
+    def stream(identity):
+        probe = Probe(hub.probes, identity.encode())
+        probes.append(probe)
+        probe.sock.settimeout(5)
+        assert probe.handshake()
+        for tier, header in enumerate(ring_headers):
+            probe.send(2, bytes([tier]) + header)
+        assert probe.receive()[:4] == bytes([3, 20, 0, 0])
+        return probe, hub.directory / 'h' / identity / 'live.v1.bin'
+
+    def status(identity):
+        return next((row[1] for row in hub.hosts() if row[0] == identity), None)
+
+    try:
+        failing, old = stream('failing')
+        healthy, current = stream('healthy')
+        failing.send(5, live)
+        healthy.send(5, live)
+        wait(lambda: old.exists() and current.exists(), 'initial snapshots did not arrive')
+
+        blocked_snapshot = old.with_name('.live.v1.bin.tmp')
+        blocked_snapshot.mkdir()
+        change = bytearray(live[:-4])
+        change[24] ^= 1  # snapshot generation time
+        updated = bytes(change) + struct.pack('<I', fnv(change))
+        failing.send(5, updated)
+        assert closed(failing.sock), 'probe with a failed snapshot stayed connected'
+        wait(lambda: status('failing') == '0', 'failed replica was still listed online')
+        assert old.read_bytes() == live
+        healthy.send(5, updated)
+        path = '/h/healthy/live.v1.bin'
+        wait(lambda: get(hub.http, path)[2] == updated, 'healthy probe stopped streaming')
+        blocked_snapshot.rmdir()
+
+        blocked_index = hub.directory / '.hosts.txt.tmp'
+        blocked_index.mkdir()
+        newcomer, snapshot = stream('newcomer')
+        newcomer.send(5, live)
+        wait(snapshot.exists, 'index failure prevented a healthy probe from streaming')
+        assert status('newcomer') is None and status('healthy') == '1'
+        blocked_index.rmdir()
+        wait(lambda: status('newcomer') == '1', 'host index did not retry')
+
+        recovered, _ = stream('failing')
+        recovered.send(5, updated)
+        wait(lambda: old.read_bytes() == updated, 'replica did not recover')
+    finally:
+        for probe in probes:
+            probe.sock.close()
+        hub.stop()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--probe', default=str(ROOT / 'quectop'), help='probe command')
@@ -503,6 +605,8 @@ def main():
         assert conflict.returncode == 1 and b'quectop-hub: another quectop-hub owns' in conflict.stderr
         bad = subprocess.run(probe_command + ['--hub', 'bad name:7070'], capture_output=True, timeout=5)
         assert bad.returncode == 1 and b'--hub needs HOST:PORT' in bad.stderr
+        remote = subprocess.run(probe_command + ['--hub', '192.0.2.1:7070'], capture_output=True, timeout=5)
+        assert remote.returncode == 1 and b'outside loopback' in remote.stderr
         probe_data = root / 'probe'
         probe = subprocess.Popen(probe_command + [
             '--data-dir', str(probe_data), '--interval-ms', '100', '--publish-ms', '200',
@@ -557,7 +661,7 @@ def main():
                 assert start % width == 0
         ring_headers = [(probe_data / ring).read_bytes()[:ring_geometry((probe_data / ring).read_bytes())[3]]
                         for ring in RINGS]
-        check_protocol(hub, ring_headers)
+        check_protocol(hub, ring_headers, local_live)
         hub.alive()
         hub.stop()
         log = hub.process.stderr.read().decode()
@@ -573,6 +677,7 @@ def main():
         check_static_server(hub.directory, identity)
         restarted.stop()
         check_cors(hub_command, hub.directory, identity)
+        check_replica_io(hub_command, root, ring_headers, local_live)
         check_keys(hub_command, probe_command, root, ring_headers)
         check_impostor(probe_command, root)
     print('hub: replication, snapshots, resume after hub restart, built-in static serving and path '

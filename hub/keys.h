@@ -5,6 +5,7 @@
 
 static char keys_path[KEYS_PATH_MAX];
 static int keys_required;
+#define PRIVATE_KEYS_FILE "keys must be a private regular file (mode 600)"
 
 /* Copies $HOME/suffix or path into keys_path. */
 static void set_keys_path(const char *path, char **env) {
@@ -32,13 +33,12 @@ static int same_id(const char *a, u32 a_bytes, const char *b, u32 b_bytes) {
 }
 /* Copies id's key; zeros when no keys file is required. 0 when id is unlisted. */
 static int device_key(const char *id, u32 id_bytes, u8 key[KEY_BYTES]) {
-  struct lines r = open_lines(keys_path);
+  struct lines r = {.fd = openat(AT_CWD, keys_path, RDONLY | NONBLOCK, 0)};
   memset(key, 0, KEY_BYTES);
   if (r.fd == -2 && !keys_required) /* ENOENT */
     return 1;
   if (r.fd >= 0 && !private_file(r.fd)) {
-    static const char exposed[] =
-        PROGRAM_NAME ": keys file is readable by other users; run chmod 600 on it\n";
+    static const char exposed[] = PROGRAM_NAME ": " PRIVATE_KEYS_FILE "\n";
     write_all(2, exposed, sizeof(exposed) - 1);
     close_lines(&r);
     return 0;
@@ -68,10 +68,12 @@ static void add_device(const char *id) {
     make_directories(keys_path, "cannot create keys directory");
     *slash = '/';
   }
-  long fd = openat(AT_CWD, keys_path, RDWR | CREATE | APPEND | NOFOLLOW, 0600);
+  long fd = openat(AT_CWD, keys_path, RDWR | CREATE | APPEND | NONBLOCK | NOFOLLOW, 0600);
   check(fd, "cannot open keys file");
+  if (!private_file(fd))
+    fail(PRIVATE_KEYS_FILE);
   check(call4(N_flock, fd, 2, 0, 0), "cannot lock keys file");
-  struct lines r = open_lines(keys_path);
+  struct lines r = {.fd = fd};
   const char *line, *listed;
   u32 n, listed_bytes;
   u8 key[KEY_BYTES];
@@ -79,7 +81,6 @@ static void add_device(const char *id) {
     if (parse_key_line(line, n, &listed, &listed_bytes, key) &&
         same_id(listed, listed_bytes, id, id_bytes))
       fail("this device already has a key; delete its line to replace it");
-  close_lines(&r);
   if (call4(N_getrandom, (long)key, KEY_BYTES, 0, 0) != KEY_BYTES)
     fail("cannot read random bytes");
   char out[1 + HOST_ID_MAX + 1 + 2 * KEY_BYTES + 1], *p = out;

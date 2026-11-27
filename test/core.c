@@ -178,6 +178,26 @@ int main(int argc, char **argv) {
     fail("100 KB/s encoding");
   if (network_pack(999950000ULL) != (100 | (2 << 10) | (2 << 12)))
     fail("network unit boundary");
+  const u32 slow_bucket_samples = 5184000;
+  u64 wide = 10000000000000ULL * slow_bucket_samples;
+  if (rounded_mean(wide, 2, slow_bucket_samples) != 10000000000000ULL ||
+      rounded_mean(wide + slow_bucket_samples / 2, 2, slow_bucket_samples) != 10000000000001ULL ||
+      network_rate(~0ULL, 0, 1) != NETWORK_MILLI_MAX)
+    fail("wide network mean and saturation");
+  if (publication_spacing(3600000, 30000) != 3600000 ||
+      publication_spacing(250, 1000) != 1000 || publication_spacing(300, 1000) != 1200)
+    fail("publication spacing follows sample intervals");
+  if (resume_cursor(20000, 10, 24000) != 20000 - (points - 1) * 10 ||
+      resume_cursor(20000, 10, 19980) != 19990 || resume_cursor(20000, 10, 19990))
+    fail("resume cursor rejects a future watermark");
+  for (u8 state = HUB_CONNECTING; state <= HUB_RESUMING; ++state) {
+    hub_state = state;
+    hub_retry_at = 0;
+    wait_for_sample(clock_ns(1) + 10000000ULL);
+    if (hub_state != HUB_IDLE)
+      fail("uplink setup phases must expire");
+  }
+  hub_state = HUB_OFF;
   memory_kib = core_count == 1 ? 65536 : 2147483648ULL;
   swap_kib = 1048576;
   u16 overall = percentage(even * 90 + odd * 10, total);

@@ -199,18 +199,21 @@ static int service_path(char *dest, unsigned long capacity, const char *prefix,
   return 1;
 }
 
-static long service_openrc_group(const char *name) {
-  static const char *const prefixes[] = {"openrc.", "unified/openrc.",
-                                         "openrc/"};
-  char path[280];
+static long service_openrc_group(const char *name, char *path, u32 capacity,
+                                 const char **membership, int *legacy) {
+  static const char *const prefixes[] = {"/openrc.", "/unified/openrc.", "/openrc/"};
+  static const u8 mount_bytes[] = {0, sizeof("/unified") - 1, sizeof("/openrc") - 1};
   for (u32 i = 0; i < 3; ++i) {
     if (clock_ns(1) >= service_deadline)
       return -1;
-    if (!service_path(path, sizeof(path), prefixes[i], name, ""))
+    if (!service_path(path, capacity, prefixes[i], name, ""))
       return -1;
-    long fd = openat(service_cgroups, path, RDONLY | DIRECTORY | NOFOLLOW, 0);
-    if (fd >= 0)
+    long fd = openat(service_cgroups, path + 1, RDONLY | DIRECTORY | NOFOLLOW, 0);
+    if (fd >= 0) {
+      *membership = path + mount_bytes[i];
+      *legacy = i == 2;
       return fd;
+    }
   }
   return -1;
 }
@@ -269,12 +272,14 @@ static void observe_openrc(const char *name, struct service_observation *row) {
     if (found && pid && pid <= 0xffffffffU)
       observe_process_uptime((u32)pid, row);
   }
-  long group = service_openrc_group(name);
+  const char *membership;
+  int legacy;
+  long group = service_openrc_group(name, path, sizeof(path), &membership, &legacy);
   if (group >= 0) {
     if (service_counter(group, "memory.current", &row->memory) ||
         service_counter(group, "memory.usage_in_bytes", &row->memory))
       row->flags |= SERVICE_HAS_MEMORY;
-    observe_service_memory(group, row);
+    observe_service_memory(group, membership, legacy, row);
     call4(N_close, group, 0, 0, 0);
   }
   if (!(row->flags & SERVICE_HAS_MEMORY) &&
@@ -332,7 +337,7 @@ static void observe_systemd(const char *name, struct service_observation *row) {
   long group =
       openat(service_cgroups, group_path + 1, RDONLY | DIRECTORY | NOFOLLOW, 0);
   if (group >= 0) {
-    observe_service_memory(group, row);
+    observe_service_memory(group, group_path, 0, row);
     call4(N_close, group, 0, 0, 0);
   }
 }

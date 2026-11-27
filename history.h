@@ -1,8 +1,7 @@
 /* History rings, tier aggregation, and atomic live snapshots. */
-static const u32 spans[TIERS] = {3600, 86400, 604800, 2592000, 7776000};
 
 struct accumulator {
-  u64 *sum;
+  u64 *sum; /* followed by one u32 carry per network metric */
   u16 *low; /* low_count entries from memory_index */
   struct values high;
   u32 *count, *peak, start;
@@ -23,6 +22,25 @@ static u32 max_record, live_capacity, pending_capacity, pending_count,
 /* Newest window start stored per tier, from the rings at startup. */
 static u32 newest[TIERS];
 
+static inline u32 *network_carries(const struct accumulator *a) {
+  return (u32 *)(a->sum + metrics);
+}
+
+static inline unsigned long sum_bytes(void) {
+  return (unsigned long)metrics * sizeof(u64) + (metrics - small_count) * sizeof(u32);
+}
+
+static u64 rounded_mean(u64 sum, u32 carry, u32 count) {
+  u64 prefix = 0;
+  if (carry) {
+    /* Long division by count in 32-bit limbs. carry < count. */
+    u64 top = (u64)carry << 32 | (sum >> 32);
+    prefix = (top / count) << 32;
+    sum = (top % count) << 32 | (u32)sum;
+  }
+  return prefix + sum / count + (sum % count >= (count + 1ULL) / 2);
+}
+
 static void encode_bucket(const struct tier *tier, u8 *dest) {
   const struct accumulator *a = &tier->active;
   memset(dest, 0, tier->record_bytes);
@@ -31,9 +49,8 @@ static void encode_bucket(const struct tier *tier, u8 *dest) {
   for (u32 k = 0; k < metrics; ++k)
     put(dest, &position, a->count[k] != 0, 1);
   for (u32 k = 0; k < metrics; ++k) {
-    u64 n = a->count[k] ? a->sum[k] / a->count[k] + (a->sum[k] % a->count[k] >=
-                                                     (a->count[k] + 1ULL) / 2)
-                        : 0;
+    u32 carry = k < small_count ? 0 : network_carries(a)[k - small_count];
+    u64 n = a->count[k] ? rounded_mean(a->sum[k], carry, a->count[k]) : 0;
     put(dest, &position, k < small_count ? n : network_pack(n), value_width(k));
   }
   for (u32 k = memory_index; k < small_count; ++k)
@@ -84,7 +101,7 @@ static int may_store(u32 i, u32 start) {
   return start > newest[i] || clock_synchronized();
 }
 static void reset_accumulator(struct accumulator *a) {
-  memset(a->sum, 0, metrics * sizeof(*a->sum));
+  memset(a->sum, 0, sum_bytes());
   memset(a->count, 0, metrics * sizeof(*a->count));
   memset(a->peak, 0, metrics * sizeof(*a->peak));
   memset(a->low, 0, low_count * sizeof(u16));
@@ -109,15 +126,15 @@ static void update_tiers(void) {
         *low = v;
     }
     for (u32 k = 0; k < metrics; ++k)
-      if (is_valid(k)) {
+      if (is_valid(k) && a->count[k] != 0xffffffffU) {
         u64 v = value_get(&latest.value, k);
         if (!a->count[k] || v > value_get(&a->high, k)) {
           value_set(&a->high, k, v);
           a->peak[k] = latest.sec - start;
         }
-        if (a->sum[k] > ~0ULL - v || a->count[k] == 0xffffffffU)
-          fail("aggregation counter overflow");
-        a->sum[k] += v;
+        /* A u16 metric cannot overflow a u64 sum with a u32 sample count. */
+        if ((a->sum[k] += v) < v)
+          ++network_carries(a)[k - small_count];
         ++a->count[k];
       }
   }

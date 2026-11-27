@@ -4,11 +4,13 @@
 #define MAX_HOSTS 64
 #define HOST_NAME_MAX 64
 #define HOSTS_TEXT_MAX (MAX_HOSTS * (HOST_ID_MAX + 3 + HOST_NAME_MAX + 1))
+#define STORAGE_RETRY_NS 5000000000ULL
 
 struct probe;
 struct host {
   long dir;
   struct probe *probe; /* connected stream, if any */
+  u64 retry_at;
   char id[HOST_ID_MAX + 1];
   char name[HOST_NAME_MAX];
   u8 id_bytes, name_bytes;
@@ -16,6 +18,7 @@ struct host {
 static struct host hosts[MAX_HOSTS];
 static u32 host_count;
 static long data_fd, hosts_fd;
+static u64 hosts_retry_at;
 static char hosts_text[HOSTS_TEXT_MAX];
 
 static int valid_name(const char *name, u32 bytes) {
@@ -55,18 +58,26 @@ static struct host *add_host(const char *id, u32 bytes) {
   ++host_count;
   return h;
 }
-/* Atomically replaces dir/name with data. */
-static void replace_file(long dir, const char *temporary, const char *name,
-                         const void *data, u32 bytes) {
-  long fd = temporary_output(dir, temporary);
-  check(fd, "cannot create hub file");
-  write_all(fd, data, bytes);
-  check(call4(N_close, fd, 0, 0, 0), "hub file close failed");
-  check(call4(N_rename, dir, (long)temporary, dir, (long)name),
-        "hub file rename failed");
+static int publish_output(long dir, const char *temporary, const char *name,
+                          long fd, int complete) {
+  if (call4(N_close, fd, 0, 0, 0) == 0 && complete &&
+      call4(N_rename, dir, (long)temporary, dir, (long)name) == 0)
+    return 1;
+  call4(N_unlink, dir, (long)temporary, 0, 0);
+  return 0;
 }
-/* Called after every connect, disconnect or rename. */
-static void write_hosts(void) {
+
+/* Atomically replaces dir/name with data. */
+static int replace_file(long dir, const char *temporary, const char *name,
+                        const void *data, u32 bytes) {
+  long fd = temporary_output(dir, temporary);
+  if (fd < 0)
+    return 0;
+  int complete = try_write_all(fd, data, bytes);
+  return publish_output(dir, temporary, name, fd, complete);
+}
+
+static void publish_hosts(void) {
   char *p = hosts_text;
   for (u32 i = 0; i < host_count; ++i) {
     const struct host *h = &hosts[i];
@@ -79,8 +90,22 @@ static void write_hosts(void) {
     p += h->name_bytes;
     *p++ = '\n';
   }
-  replace_file(data_fd, ".hosts.txt.tmp", "hosts.txt", hosts_text,
-               (u32)(p - hosts_text));
+  if (replace_file(data_fd, ".hosts.txt.tmp", "hosts.txt", hosts_text,
+                   (u32)(p - hosts_text))) {
+    hosts_retry_at = 0;
+  } else {
+    if (!hosts_retry_at) {
+      static const char message[] = PROGRAM_NAME ": cannot publish hosts.txt. Will retry.\n";
+      call4(N_write, 2, (long)message, sizeof(message) - 1, 0);
+    }
+    hosts_retry_at = clock_ns(1) + STORAGE_RETRY_NS;
+  }
+}
+
+/* A pending retry will publish the latest host table. */
+static void write_hosts(void) {
+  if (!hosts_retry_at)
+    publish_hosts();
 }
 /* Restores hosts from an earlier run, all offline; skips damaged lines. */
 static void load_hosts(void) {

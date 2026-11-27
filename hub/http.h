@@ -128,6 +128,27 @@ static int map_path(const char *path, const char *end, char *out) {
   out[end - path] = 0;
   return 1;
 }
+static long open_http_file(char *name) {
+  long flags = RDONLY | NONBLOCK | NOFOLLOW;
+  if (name[0] != 'h' || name[1] != '/')
+    return openat(data_fd, name, flags, 0);
+
+  long root = openat(data_fd, "h", RDONLY | DIRECTORY | NOFOLLOW, 0);
+  if (root < 0)
+    return root;
+  char *leaf = name + 2;
+  while (*leaf != '/')
+    ++leaf;
+  *leaf = 0;
+  long dir = openat(root, name + 2, RDONLY | DIRECTORY | NOFOLLOW, 0);
+  *leaf = '/';
+  call4(N_close, root, 0, 0, 0);
+  if (dir < 0)
+    return dir;
+  long fd = openat(dir, leaf + 1, flags, 0);
+  call4(N_close, dir, 0, 0, 0);
+  return fd;
+}
 static void route(struct client *c, const char *end) {
   const char *s = c->buffer;
   int head_only = prefix(s, "HEAD ");
@@ -142,9 +163,8 @@ static void route(struct client *c, const char *end) {
   long fd = -1;
   i64 size = -1;
   if (*path == '/' && map_path(path, stop, name)) {
-    fd = openat(data_fd, name, RDONLY | NOFOLLOW, 0);
-    /* A one-byte read fails with EISDIR for directories. */
-    if (fd >= 0 && file_io(N_pread, fd, chunk, 1, 0) >= 0)
+    fd = open_http_file(name);
+    if (fd >= 0 && regular_file(fd, 0) >= 0)
       size = seek_file(fd, 0, 2);
   }
   if (size < 0 || size > 0xffffffffLL) {
